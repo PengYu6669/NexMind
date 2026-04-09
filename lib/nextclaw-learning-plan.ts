@@ -1,0 +1,108 @@
+import { callDashscopeChatCompletion, extractJsonFromText } from "@/lib/doubao";
+import { MAX_PLAN_STEPS } from "@/lib/nextclaw-agent-config";
+import type { LearningJobType } from "@prisma/client";
+import type { LearningPlanJson, LearningPlanStepDraft, PlanToolName } from "@/lib/nextclaw-agent-types";
+
+const FALLBACK_PLAN: LearningPlanJson = {
+  steps: [
+    { id: "s1", title: "检索知识库并汇总相关笔记片段", tool: "search_notes" },
+    { id: "s2", title: "精读当前笔记正文", tool: "read_note" },
+    { id: "s3", title: "生成冲突/补位/复习等学习卡片", tool: "synthesize" },
+  ],
+};
+
+function normalizeTool(v: unknown): PlanToolName | null {
+  const s = String(v ?? "").trim();
+  if (
+    s === "search_notes" ||
+    s === "read_note" ||
+    s === "web_search" ||
+    s === "fetch_url" ||
+    s === "audit_content" ||
+    s === "synthesize" ||
+    s === "noop"
+  )
+    return s;
+  if (!s || s === "null") return null;
+  return "noop";
+}
+
+function normalizePlan(raw: unknown): LearningPlanJson | null {
+  if (!raw || typeof raw !== "object") return null;
+  const steps = (raw as { steps?: unknown }).steps;
+  if (!Array.isArray(steps) || steps.length === 0) return null;
+  const out: LearningPlanStepDraft[] = [];
+  for (let i = 0; i < steps.length; i++) {
+    const row = steps[i];
+    if (!row || typeof row !== "object") continue;
+    const id = String((row as { id?: unknown }).id ?? "").trim() || `step-${i + 1}`;
+    const title = String((row as { title?: unknown }).title ?? "").trim();
+    if (!title) continue;
+    const tool = normalizeTool((row as { tool?: unknown }).tool);
+    out.push({ id, title, tool });
+  }
+  return out.length ? { steps: out.slice(0, MAX_PLAN_STEPS) } : null;
+}
+
+function capPlanSteps(plan: LearningPlanJson): LearningPlanJson {
+  return { steps: plan.steps.slice(0, MAX_PLAN_STEPS) };
+}
+
+/**
+ * 基于当前笔记与检索摘要，让 LLM 输出 JSON Plan（steps + 建议 tool）。
+ * 失败时返回内置 Fallback，保证 Runner 可继续执行。
+ */
+export async function generateLearningPlan(params: {
+  noteTitle: string;
+  noteSnippet: string;
+  relatedLines: string[];
+  jobType: LearningJobType;
+  urls?: string[];
+}): Promise<LearningPlanJson> {
+  const model =
+    process.env.AI_MODEL_WRITER ||
+    process.env.AI_MODEL_CHAT ||
+    "Doubao-Seed-2.0-lite";
+
+  const deep = params.jobType === "NOTE_LEARN_DEEP";
+  const system =
+    "你是 NextClaw 学习任务规划器。根据用户笔记与相关摘要，输出**仅 JSON**（不要 Markdown、不要解释）。\n" +
+    "字段：steps 为数组；每项含 id（短字符串）、title（中文短句，说明该步做什么）、tool（可为 null 或以下之一：search_notes | read_note | web_search | fetch_url | audit_content | synthesize | noop）。\n" +
+    "约束：steps 数量 3～8；必须包含至少一步 synthesize 用于最终生成学习卡片；search_notes 表示依赖检索结果，read_note 表示需要精读正文，noop 表示纯推理不写工具。\n" +
+    "工具说明：web_search=联网搜索并返回候选链接；fetch_url=抓取网页并转为 Markdown；audit_content=把抓取内容与相关笔记做审计对比，产出冲突/补位/关联建议。\n" +
+    (deep ? "深度模式：允许更多 compare/推理步骤（仍用 noop 表示无工具）。\n" : "");
+
+  const user = JSON.stringify({
+    noteTitle: params.noteTitle,
+    noteSnippet: params.noteSnippet.slice(0, 4000),
+    relatedSummaries: params.relatedLines.slice(0, 8),
+    urls: (params.urls ?? []).slice(0, 5),
+  });
+
+  try {
+    const raw = await callDashscopeChatCompletion({
+      model,
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: user },
+      ],
+    });
+    const parsed = extractJsonFromText(raw);
+    const plan = normalizePlan(parsed);
+    if (plan?.steps?.length) {
+      const hasSynth = plan.steps.some((s) => s.tool === "synthesize");
+      if (!hasSynth) {
+        plan.steps.push({
+          id: "finalize",
+          title: "生成结构化学习卡片与复习要点",
+          tool: "synthesize",
+        });
+      }
+      return capPlanSteps(plan);
+    }
+  } catch (e) {
+    console.warn("[nextclaw-learning-plan] LLM plan failed, using fallback", e);
+  }
+
+  return capPlanSteps(FALLBACK_PLAN);
+}

@@ -1,0 +1,636 @@
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
+import {
+  AlertTriangle,
+  ArrowUpRight,
+  ChevronDown,
+  ChevronUp,
+  GitBranch,
+  Loader2,
+  MessageSquarePlus,
+  Pin,
+  Sparkles,
+} from "lucide-react";
+
+type FeedCardType = "conflict" | "external_update" | "review";
+type FeedDbType = "REVIEW" | "FILL_GAP" | "PITFALL" | "CONFLICT" | "RELATED" | "EXTERNAL" | "AUDIT";
+
+export type IntelligenceFeedCard = {
+  id: string;
+  /** 所属笔记，用于追问时带上 noteId / learningCardId */
+  noteId?: string;
+  type: FeedCardType;
+  dbType?: FeedDbType;
+  /** 覆盖徽标文案（如：冲突 / 踩坑 / 补位） */
+  badgeLabel?: string;
+  title: string;
+  summary: string;
+  metaLeft: string;
+  metaRight: string;
+  chips?: string[];
+  codeA?: string;
+  codeB?: string;
+  review?: { reviewItemId: string; progressLabel: string; dueLabel: string; prompt: string };
+};
+
+function CardTypeBadge({ type, label }: { type: FeedCardType; label?: string }) {
+  if (type === "conflict") {
+    return (
+      <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-md border border-error/30 bg-error/10 px-2 py-1 text-[11px] font-bold text-error">
+        <AlertTriangle className="h-3.5 w-3.5" />
+        {label ?? "冲突"}
+      </span>
+    );
+  }
+  if (type === "external_update") {
+    return (
+      <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-md border border-primary/20 bg-primary/10 px-2 py-1 text-[11px] font-bold text-primary">
+        <ArrowUpRight className="h-3.5 w-3.5" />
+        {label ?? "情报"}
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-md border border-tertiary/25 bg-tertiary/10 px-2 py-1 text-[11px] font-bold text-tertiary">
+      <Pin className="h-3.5 w-3.5" />
+      {label ?? "复习"}
+    </span>
+  );
+}
+
+function InlineAsk({
+  open,
+  onClose,
+  onSubmit,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onSubmit: (text: string) => void;
+}) {
+  const [text, setText] = useState("");
+  if (!open) return null;
+
+  return (
+    <div className="mt-3 rounded-xl border border-outline-variant/15 bg-surface-container-lowest/40 p-3">
+      <form
+        className="flex items-center gap-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          const v = text.trim();
+          if (!v) return;
+          onSubmit(v);
+          setText("");
+          onClose();
+        }}
+      >
+        <input
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          className="min-w-0 flex-1 rounded-lg border border-outline-variant/15 bg-surface-container-low/60 px-3 py-2 text-sm text-on-surface outline-none placeholder:text-outline/40 focus:ring-1 focus:ring-primary/25"
+          placeholder="追问这个卡片的细节…"
+          aria-label="追问输入框"
+        />
+        <button
+          type="submit"
+          className="rounded-lg bg-primary-container px-3 py-2 text-sm font-bold text-on-primary-container transition-colors hover:bg-primary-container/90"
+        >
+          发送
+        </button>
+        <button
+          type="button"
+          onClick={onClose}
+          className="rounded-lg border border-outline-variant/20 px-3 py-2 text-sm text-on-surface-variant hover:bg-surface-container-low"
+        >
+          取消
+        </button>
+      </form>
+      <div className="mt-2 text-[11px] text-outline/70">
+        需要时再问一句即可，不用切到整页聊天。
+      </div>
+    </div>
+  );
+}
+
+export type IntelligenceFeedAgentJob = {
+  id: string;
+  status: string;
+  type: string;
+  noteTitle: string;
+  ui: {
+    headline: string;
+    progress: number;
+    currentStepLabel: string | null;
+    steps: { id: string; label: string; status: string; toolSummary?: string }[];
+  };
+};
+
+export function IntelligenceFeed({
+  cards,
+  loading,
+  error,
+  activeAgentJobs,
+  onAsk,
+  onAfterReviewScore,
+}: {
+  /** null = 加载中；undefined = 未请求（演示数据）；有数组 = 接口结果（可为空） */
+  cards?: IntelligenceFeedCard[] | null;
+  loading?: boolean;
+  error?: string | null;
+  /** 自治 Agent 进行中任务（来自 GET /api/nextclaw/feed.activeJobs） */
+  activeAgentJobs?: IntelligenceFeedAgentJob[] | null;
+  onAsk?: (payload: { cardId: string; noteId?: string; text: string }) => void;
+  onAfterReviewScore?: () => void;
+}) {
+  const demoCards = useMemo<IntelligenceFeedCard[]>(
+    () => [
+      {
+        id: "demo-conflict",
+        type: "conflict",
+        dbType: "CONFLICT",
+        badgeLabel: "示例",
+        title: "水合错误：客户端与服务端渲染结果不一致",
+        summary:
+          "检测到组件树在首屏渲染时存在非确定性分支。优先排查：依赖时间/随机数、条件渲染、useEffect 里改写结构。",
+        metaLeft: "Claw Agent · 冲突卡",
+        metaRight: "演示",
+        codeA: "useEffect(() => { setMounted(true) }, [])",
+        codeB: "const data = use(promise)",
+      },
+      {
+        id: "demo-external",
+        type: "external_update",
+        dbType: "EXTERNAL",
+        badgeLabel: "示例",
+        title: "Next.js 版本更新：运行时与缓存语义变化",
+        summary:
+          "从你的笔记指纹推断：你正在触及 App Router + 数据缓存。建议先确认升级路径与 breaking changes，再决定是否切换默认 bundler。",
+        metaLeft: "External · 变更卡",
+        metaRight: "演示",
+        chips: ["React 19", "Turbopack 默认", "Fetch 缓存 v2"],
+      },
+      {
+        id: "demo-review",
+        type: "review",
+        dbType: "REVIEW",
+        badgeLabel: "示例",
+        title: "复习任务：Server Actions（第 4 次）",
+        summary:
+          "你的留存曲线进入 L4 阶段。今天的最小动作：用 1 句话写清 revalidate 的触发点，并用一个例子区分 path/tag。",
+        metaLeft: "Smart Ebbinghaus · 复习卡",
+        metaRight: "演示",
+        review: {
+          reviewItemId: "demo-review-item",
+          progressLabel: "第 4 次复习 / 84% 留存",
+          dueLabel: "下一次：+3 天",
+          prompt: "Server Actions 如何处理重新校验（revalidatePath / revalidateTag）？分别适用于什么场景？",
+        },
+      },
+    ],
+    [],
+  );
+
+  const data = useMemo(() => {
+    if (loading || cards === null) return [];
+    if (cards === undefined) return demoCards;
+    return cards;
+  }, [cards, demoCards, loading]);
+
+  const isDemo = cards === undefined;
+  const [activeFilters, setActiveFilters] = useState<FeedDbType[]>([]);
+
+  const [askOpen, setAskOpen] = useState<Record<string, boolean>>({});
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [agentLogExpanded, setAgentLogExpanded] = useState(false);
+  const [stickyAgentJob, setStickyAgentJob] = useState<IntelligenceFeedAgentJob | null>(null);
+  const [answerByCardId, setAnswerByCardId] = useState<Record<string, string>>({});
+  const [aiBusyByCardId, setAiBusyByCardId] = useState<Record<string, boolean>>({});
+  const [aiErrorByCardId, setAiErrorByCardId] = useState<Record<string, string | null>>({});
+  const [aiResultByCardId, setAiResultByCardId] = useState<
+    Record<
+      string,
+      | {
+          lastScore: number;
+          feedback?: string;
+          matchedKeyPoints?: string[];
+          missingKeyPoints?: string[];
+        }
+      | undefined
+    >
+  >({});
+
+  const filterDefs: { key: FeedDbType; label: string }[] = [
+    { key: "AUDIT", label: "审计" },
+    { key: "REVIEW", label: "复习" },
+    { key: "RELATED", label: "关联" },
+    { key: "FILL_GAP", label: "补位" },
+    { key: "PITFALL", label: "踩坑" },
+    { key: "CONFLICT", label: "冲突" },
+    { key: "EXTERNAL", label: "外部" },
+  ];
+
+  const filterCountMap = useMemo(() => {
+    const m: Record<string, number> = {};
+    for (const c of data) {
+      const k = c.dbType ?? "EXTERNAL";
+      m[k] = (m[k] ?? 0) + 1;
+    }
+    return m;
+  }, [data]);
+
+  const filteredData = useMemo(() => {
+    if (!activeFilters.length) return data;
+    return data.filter((c) => c.dbType && activeFilters.includes(c.dbType));
+  }, [activeFilters, data]);
+
+  async function submitReviewAnswer(cardId: string, reviewItemId: string) {
+    const answer = (answerByCardId[cardId] ?? "").trim();
+    if (!answer) return;
+    if (isDemo) return;
+    if (aiBusyByCardId[cardId]) return;
+
+    setAiErrorByCardId((m) => ({ ...m, [cardId]: null }));
+    setAiBusyByCardId((m) => ({ ...m, [cardId]: true }));
+    try {
+      const r = await fetch("/api/nextclaw/review/score", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reviewItemId, learningCardId: cardId, answer }),
+      });
+      const data = (await r.json().catch(() => null)) as { error?: string } & {
+        lastScore?: number;
+        aiParsed?: { feedback?: string; matchedKeyPoints?: string[]; missingKeyPoints?: string[] };
+      };
+      if (!r.ok) throw new Error(data?.error || `AI 评分失败：HTTP ${r.status}`);
+
+      setAiResultByCardId((m) => ({
+        ...m,
+        [cardId]: {
+          lastScore: typeof data.lastScore === "number" ? data.lastScore : 0,
+          feedback: data.aiParsed?.feedback,
+          matchedKeyPoints: data.aiParsed?.matchedKeyPoints,
+          missingKeyPoints: data.aiParsed?.missingKeyPoints,
+        },
+      }));
+
+      onAfterReviewScore?.();
+    } catch (e) {
+      setAiErrorByCardId((m) => ({ ...m, [cardId]: e instanceof Error ? e.message : "AI 评分失败" }));
+    } finally {
+      setAiBusyByCardId((m) => ({ ...m, [cardId]: false }));
+    }
+  }
+
+  const liveAgentJob = activeAgentJobs?.[0] ?? null;
+  const monitorAgentJob = liveAgentJob ?? stickyAgentJob;
+
+  useEffect(() => {
+    if (!liveAgentJob) return;
+    setStickyAgentJob(liveAgentJob);
+    setAgentLogExpanded(false);
+  }, [liveAgentJob]);
+
+  return (
+    <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      <div className="shrink-0 border-b border-outline-variant/10 px-6 py-4">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2">
+              <Sparkles className="h-4 w-4 text-primary" />
+              <h2 className="font-headline text-sm font-black tracking-tight text-on-surface">学习卡片</h2>
+            </div>
+            <p className="mt-1 text-xs leading-relaxed text-on-surface-variant">
+              这里集中显示：哪里可能记拧了、哪里要补一句、今天该复习什么。点卡片可看细节。
+            </p>
+            {error ? <p className="mt-2 text-xs text-error">{error}</p> : null}
+            {!loading ? (
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setActiveFilters([])}
+                  className={`rounded-md border px-2 py-1 text-[11px] font-bold transition-colors ${
+                    activeFilters.length === 0
+                      ? "border-primary/35 bg-primary/15 text-primary"
+                      : "border-outline-variant/20 bg-surface-container-low/40 text-on-surface-variant hover:bg-surface-container-low/60"
+                  }`}
+                >
+                  全部（{data.length}）
+                </button>
+                {filterDefs.map((f) => {
+                  const active = activeFilters.includes(f.key);
+                  const count = filterCountMap[f.key] ?? 0;
+                  return (
+                    <button
+                      key={f.key}
+                      type="button"
+                      onClick={() =>
+                        setActiveFilters((prev) =>
+                          prev.includes(f.key) ? prev.filter((x) => x !== f.key) : [...prev, f.key]
+                        )
+                      }
+                      className={`rounded-md border px-2 py-1 text-[11px] font-bold transition-colors ${
+                        active
+                          ? "border-primary/35 bg-primary/15 text-primary"
+                          : "border-outline-variant/20 bg-surface-container-low/40 text-on-surface-variant hover:bg-surface-container-low/60"
+                      }`}
+                    >
+                      {f.label}（{count}）
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
+          </div>
+          <div className="hidden items-center gap-2 text-[11px] font-bold text-outline xl:flex">
+            <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-md border border-outline-variant/20 bg-surface-container-low/60 px-2 py-1">
+              <GitBranch className="h-3.5 w-3.5" />
+              <span className="whitespace-nowrap">信号：笔记冲突</span>
+            </span>
+            <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-md border border-outline-variant/20 bg-surface-container-low/60 px-2 py-1">
+              <Pin className="h-3.5 w-3.5" />
+              <span className="whitespace-nowrap">任务：今日复习</span>
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div className="no-scrollbar min-h-0 flex-1 space-y-2.5 overflow-y-auto px-6 py-4">
+        {monitorAgentJob ? (
+          <div className="sticky top-0 z-10 rounded-2xl border border-primary/30 bg-primary/5 p-4 shadow-sm backdrop-blur-sm">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="inline-flex h-8 w-8 items-center justify-center rounded-xl border border-primary/25 bg-primary/10">
+                    <Loader2 className="h-4 w-4 animate-spin text-primary" aria-hidden />
+                  </span>
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-black text-on-surface">Agent 实时工作流</div>
+                    <div className="mt-0.5 truncate text-[11px] text-on-surface-variant">
+                      {monitorAgentJob.noteTitle}
+                    </div>
+                  </div>
+                </div>
+                <div className="mt-2 text-[11px] text-on-surface-variant">
+                  <span className="font-bold text-outline/90">{monitorAgentJob.ui.headline}</span>
+                  {monitorAgentJob.ui.currentStepLabel ? (
+                    <>
+                      <span className="mx-1 opacity-40">·</span>
+                      <span>{monitorAgentJob.ui.currentStepLabel}</span>
+                    </>
+                  ) : null}
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <span className="shrink-0 rounded-md bg-surface-container-high/50 px-2 py-1 text-[10px] font-bold text-outline">
+                  {monitorAgentJob.type === "NOTE_LEARN_DEEP" ? "深度模式" : "轻量模式"}
+                </span>
+                {!liveAgentJob ? (
+                  <button
+                    type="button"
+                    onClick={() => setStickyAgentJob(null)}
+                    className="shrink-0 rounded-md border border-outline-variant/20 px-2 py-1 text-[10px] font-bold text-on-surface-variant hover:bg-surface-container-low/40"
+                  >
+                    关闭
+                  </button>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-surface-container-highest/50">
+              <div
+                className="h-full rounded-full bg-primary/85 transition-[width] duration-300"
+                style={{ width: `${Math.round((monitorAgentJob.ui.progress ?? 0) * 100)}%` }}
+              />
+            </div>
+
+            {(() => {
+              const steps = monitorAgentJob.ui.steps ?? [];
+              if (!steps.length) return null;
+              const shown = agentLogExpanded ? steps : steps.slice(0, 6);
+              return (
+                <div className="mt-3 rounded-xl border border-outline-variant/12 bg-surface-container-lowest/25 px-3 py-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-[10px] font-black uppercase tracking-widest text-outline/70">工作记录</div>
+                    {steps.length > 6 ? (
+                      <button
+                        type="button"
+                        onClick={() => setAgentLogExpanded((v) => !v)}
+                        className="text-[10px] font-bold text-primary hover:underline"
+                      >
+                        {agentLogExpanded ? "收起" : `展开全部（${steps.length}）`}
+                      </button>
+                    ) : null}
+                  </div>
+                  <ol className="mt-1 list-decimal space-y-1 pl-4 text-[12px] leading-relaxed text-on-surface-variant">
+                    {shown.map((s) => (
+                      <li key={s.id}>
+                        <span className="text-on-surface/90">{s.label}</span>
+                        <span className="ml-1 rounded bg-surface-container-highest/45 px-1 text-[10px] text-outline/90">
+                          {s.status}
+                        </span>
+                        {s.toolSummary ? (
+                          <div className="mt-0.5 text-[11px] text-outline/80">{s.toolSummary}</div>
+                        ) : null}
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              );
+            })()}
+          </div>
+        ) : null}
+
+        {loading || cards === null ? (
+          <div className="rounded-2xl border border-outline-variant/15 bg-surface-container-lowest/30 px-4 py-8 text-center text-sm text-on-surface-variant">
+            正在加载智能流…
+          </div>
+        ) : null}
+
+        {!loading && Array.isArray(cards) && cards.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-outline-variant/25 bg-surface-container-lowest/20 px-4 py-8 text-center">
+            <p className="text-sm font-bold text-on-surface">暂无学习卡片</p>
+            <p className="mt-2 text-xs leading-relaxed text-on-surface-variant">
+              在笔记中保存内容后，可通过「学习队列」触发{" "}
+              <code className="rounded bg-surface-container-high px-1 text-[11px]">POST /api/notes/[id]/learning-enqueue</code>{" "}
+              或定时任务 <code className="rounded bg-surface-container-high px-1 text-[11px]">POST /api/internal/learning/run-jobs</code>{" "}
+              生成卡片。
+            </p>
+          </div>
+        ) : null}
+
+        {filteredData.map((c) => {
+          const open = !!askOpen[c.id];
+          const isExpanded = !!expanded[c.id];
+          const hasDetails = !!(c.chips?.length || c.codeA || c.codeB || c.review);
+          return (
+            <article
+              key={c.id}
+              className="group rounded-2xl border border-outline-variant/12 bg-[#060e20]/60 p-4 shadow-[0_14px_38px_rgba(0,0,0,0.22)] transition-colors hover:border-outline-variant/20 hover:bg-[#060e20]/75"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <CardTypeBadge type={c.type} label={c.badgeLabel} />
+                    <h3 className="truncate font-headline text-sm font-extrabold tracking-tight text-on-surface">
+                      {c.title}
+                    </h3>
+                  </div>
+                  <div className="mt-1 flex items-center gap-2 text-[10px] font-medium text-outline/80">
+                    <span>{c.metaLeft}</span>
+                    <span className="opacity-40">·</span>
+                    <span>{c.metaRight}</span>
+                  </div>
+                </div>
+
+                <div className="flex items-start gap-2">
+                  {hasDetails ? (
+                    <button
+                      type="button"
+                      onClick={() => setExpanded((s) => ({ ...s, [c.id]: !s[c.id] }))}
+                      className="inline-flex items-center gap-1 whitespace-nowrap rounded-lg border border-outline-variant/12 bg-surface-container-low/35 px-2 py-1.5 text-[11px] font-bold text-on-surface-variant transition-colors hover:border-primary/25 hover:bg-surface-container-low/50"
+                      aria-label={isExpanded ? "收起详情" : "展开详情"}
+                    >
+                      {isExpanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                      {isExpanded ? "收起" : "展开"}
+                    </button>
+                  ) : null}
+
+                  <button
+                    type="button"
+                    onClick={() => setAskOpen((s) => ({ ...s, [c.id]: !s[c.id] }))}
+                    className="inline-flex items-center gap-1 whitespace-nowrap rounded-lg border border-outline-variant/12 bg-surface-container-low/35 px-2.5 py-1.5 text-sm font-bold text-on-surface-variant opacity-0 transition-all hover:border-primary/25 hover:bg-surface-container-low/50 hover:text-on-surface group-hover:opacity-100 focus:opacity-100"
+                    aria-label="追问"
+                  >
+                    <MessageSquarePlus className="h-3.5 w-3.5" />
+                    追问
+                  </button>
+                </div>
+              </div>
+
+              <p className="mt-2.5 text-sm leading-relaxed text-on-surface-variant">{c.summary}</p>
+
+              {!isExpanded && hasDetails ? (
+                <div className="mt-2 text-[11px] text-outline/70">
+                  点击「展开」查看代码对比与补位建议。
+                </div>
+              ) : null}
+
+              {isExpanded && c.chips?.length ? (
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  {c.chips.map((x) => (
+                    <span
+                      key={x}
+                      className="rounded-md border border-outline-variant/12 bg-surface-container-low/30 px-2 py-1 text-[11px] text-on-surface"
+                    >
+                      {x}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+
+              {isExpanded && (c.codeA || c.codeB) ? (
+                <div className="mt-3.5 grid grid-cols-1 gap-2 md:grid-cols-2">
+                  {c.codeA ? (
+                    <div className="rounded-xl border border-error/20 bg-error/5 p-3">
+                      <div className="mb-1 text-[10px] font-bold uppercase tracking-wider text-error/80">冲突片段</div>
+                      <pre className="overflow-x-auto text-[11px] leading-relaxed text-error/90">
+                        <code>{c.codeA}</code>
+                      </pre>
+                    </div>
+                  ) : null}
+                  {c.codeB ? (
+                    <div className="rounded-xl border border-primary/15 bg-primary/5 p-3">
+                      <div className="mb-1 text-[10px] font-bold uppercase tracking-wider text-primary/80">修复候选</div>
+                      <pre className="overflow-x-auto text-[11px] leading-relaxed text-primary/90">
+                        <code>{c.codeB}</code>
+                      </pre>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {isExpanded && c.review ? (
+                <div className="mt-3.5 rounded-xl border border-outline-variant/12 bg-surface-container-low/30 p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="text-[11px] font-bold text-on-surface-variant">当前掌握进度</div>
+                    <div className="text-[11px] font-black text-primary">{c.review.progressLabel}</div>
+                  </div>
+                  <div className="mt-3 rounded-lg border border-outline-variant/10 bg-surface-container-lowest/30 p-3 text-xs text-on-surface-variant">
+                    <div className="text-[11px] font-bold text-on-surface">自测题</div>
+                    <div className="mt-1 text-[12px] leading-relaxed">{c.review.prompt}</div>
+                    <div className="mt-2 text-[10px] text-outline/70">{c.review.dueLabel}</div>
+                    <div className="mt-3">
+                      <div className="mb-1 text-[10px] font-bold text-outline/70">写下你的回答（AI 会自动评分 + 解析）</div>
+                      <textarea
+                        value={answerByCardId[c.id] ?? ""}
+                        onChange={(e) => setAnswerByCardId((m) => ({ ...m, [c.id]: e.target.value }))}
+                        rows={3}
+                        placeholder="用你自己的话回答…（越具体越好）"
+                        className="min-h-[72px] w-full resize-none rounded-lg border border-outline-variant/15 bg-surface-container-lowest/40 px-3 py-2 text-xs leading-relaxed text-on-surface outline-none focus:ring-1 focus:ring-primary/25"
+                      />
+                      <div className="mt-2 flex items-center justify-between gap-3">
+                        <button
+                          type="button"
+                          disabled={isDemo || !!aiBusyByCardId[c.id]}
+                          onClick={() => submitReviewAnswer(c.id, c.review!.reviewItemId)}
+                          className="rounded-lg bg-primary-container px-3 py-2 text-[11px] font-bold text-on-primary-container transition-colors hover:bg-primary-container/90 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {aiBusyByCardId[c.id] ? "AI 评分中…" : "提交并 AI 评分"}
+                        </button>
+                        <div className="text-[10px] text-outline/70">0-5 分将用于 SM2 更新</div>
+                      </div>
+
+                      {aiErrorByCardId[c.id] ? (
+                        <div className="mt-2 text-[10px] font-bold text-error">{aiErrorByCardId[c.id]}</div>
+                      ) : null}
+
+                      {aiResultByCardId[c.id] ? (
+                        <div className="mt-3 rounded-lg border border-outline-variant/10 bg-surface-container-low/30 p-3">
+                          <div className="text-[10px] font-bold text-on-surface-variant">AI 解析结果</div>
+                          <div className="mt-1 text-[11px] font-bold text-primary">
+                            评分：{aiResultByCardId[c.id]?.lastScore}/5
+                          </div>
+                          {aiResultByCardId[c.id]?.feedback ? (
+                            <div className="mt-1 text-[10px] leading-relaxed text-on-surface-variant/90">
+                              {aiResultByCardId[c.id]?.feedback}
+                            </div>
+                          ) : null}
+
+                          {aiResultByCardId[c.id]?.matchedKeyPoints?.length ? (
+                            <div className="mt-2 text-[10px] font-bold text-outline/70">
+                              匹配要点：{aiResultByCardId[c.id]?.matchedKeyPoints?.slice(0, 3).join("；")}
+                            </div>
+                          ) : null}
+                          {aiResultByCardId[c.id]?.missingKeyPoints?.length ? (
+                            <div className="mt-1 text-[10px] font-bold text-outline/70">
+                              缺失要点：{aiResultByCardId[c.id]?.missingKeyPoints?.slice(0, 3).join("；")}
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
+              <InlineAsk
+                open={open}
+                onClose={() => setAskOpen((s) => ({ ...s, [c.id]: false }))}
+                onSubmit={(text) => onAsk?.({ cardId: c.id, noteId: c.noteId, text })}
+              />
+            </article>
+          );
+        })}
+
+        {!loading && filteredData.length === 0 && data.length > 0 ? (
+          <div className="rounded-2xl border border-dashed border-outline-variant/20 bg-surface-container-lowest/20 px-4 py-6 text-center text-xs text-on-surface-variant">
+            当前筛选下暂无卡片，切换上方标签查看其它类型。
+          </div>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+

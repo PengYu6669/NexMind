@@ -1,0 +1,386 @@
+// NexMind — PostgreSQL 数据模型（对齐 PRD：用户、笔记、标签、对话与消息、设置）
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum MessageRole {
+  USER
+  ASSISTANT
+  SYSTEM
+}
+
+enum LearningJobType {
+  NOTE_LEARN_LITE
+  NOTE_LEARN_DEEP
+  NOTE_EXTERNAL_INJECT
+}
+
+enum LearningJobStatus {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+  SKIPPED
+}
+
+enum LearningCardType {
+  REVIEW
+  FILL_GAP
+  PITFALL
+  CONFLICT
+  RELATED
+  EXTERNAL
+  AUDIT
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String?  @unique
+  name      String?
+  avatarUrl String?
+  /// 账户凭据（MVP：仅支持 Email + Password）
+  passwordHash String?
+  /// 套餐标识，如 free / pro
+  plan      String   @default("free")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  notes         Note[]
+  noteLinks     NoteLink[]
+  knowledgeSources  KnowledgeSource[]
+  sourceChunks      SourceChunk[]
+  studyProjects     StudyProject[]
+  projectNotes      StudyProjectNote[]
+  projectSources    StudyProjectSource[]
+  userMemories      UserMemory[]
+  learningSnapshots LearningSnapshot[]
+  learningJobs      LearningJob[]
+  learningCards     LearningCard[]
+  reviewItems       ReviewItem[]
+  tags          Tag[]
+  conversations Conversation[]
+  userSettings  UserSettings?
+}
+
+model UserSettings {
+  id           String   @id @default(cuid())
+  userId       String   @unique
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  defaultModel String?
+  theme        String   @default("dark")
+  /// NextClaw：是否注入/抽取跨会话记忆（默认开启）
+  nextclawMemoryEnabled Boolean @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model Tag {
+  id        String   @id @default(cuid())
+  name      String
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  notes     NoteTag[]
+  createdAt DateTime @default(now())
+
+  @@unique([userId, name])
+}
+
+model Note {
+  id         String   @id @default(cuid())
+  title      String
+  content    String   @db.Text
+  excerpt    String?  @db.Text
+  sourceUrl  String?
+  /// link | manual | chat | import 等
+  sourceType String?
+  archived   Boolean  @default(false)
+  pinned     Boolean  @default(false)
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  conversationId String?
+  conversation   Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tags NoteTag[]
+
+  linksFrom NoteLink[] @relation("NoteLinksFrom")
+  linksTo   NoteLink[] @relation("NoteLinksTo")
+  projectLinks StudyProjectNote[]
+  learningJobs  LearningJob[]
+  learningCards LearningCard[]
+  reviewItems   ReviewItem[]
+
+  @@index([userId, updatedAt(sort: Desc)])
+  @@index([userId, archived])
+}
+
+model LearningJob {
+  id        String            @id @default(cuid())
+  userId    String
+  user      User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  noteId    String?
+  note      Note?             @relation(fields: [noteId], references: [id], onDelete: Cascade)
+
+  type      LearningJobType
+  status    LearningJobStatus @default(PENDING)
+  priority  Int               @default(0)
+
+  /** 幂等/跳过：任务创建时的笔记更新时间（或版本戳） */
+  noteUpdatedAt DateTime?
+
+  /** 防抖：保存后延迟一段时间再跑 */
+  runAt     DateTime          @default(now())
+
+  /** 预算/限制（可选） */
+  budgetTokens Int?
+
+  /// Plan-Based Agent：LLM 输出的执行计划（JSON，含 steps 与建议 tool）
+  plan      Json?
+  /// 多步骤状态机：追加写入，供任务台展示「当前一步 / 展开全部」
+  steps     Json?
+
+  attempts  Int               @default(0)
+  lastError String?           @db.Text
+
+  startedAt DateTime?
+  finishedAt DateTime?
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
+
+  @@index([userId, status, runAt])
+  @@index([noteId])
+  @@index([userId, type, status])
+}
+
+model LearningCard {
+  id        String           @id @default(cuid())
+  userId    String
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  noteId    String
+  note      Note             @relation(fields: [noteId], references: [id], onDelete: Cascade)
+
+  type      LearningCardType
+  title     String
+  contentMd String           @db.Text
+  sources   Json?
+  noteUpdatedAt DateTime?
+
+  createdAt DateTime         @default(now())
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([noteId, createdAt(sort: Desc)])
+  @@index([userId, noteId, type])
+}
+
+model ReviewItem {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  noteId    String
+  note      Note     @relation(fields: [noteId], references: [id], onDelete: Cascade)
+
+  dueDate   DateTime
+  intervalDays Int   @default(1)
+  easeFactor  Float @default(2.5)
+  lastScore   Int?
+  lastReviewedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, noteId])
+  @@index([userId, dueDate])
+  @@index([noteId])
+}
+
+/// 笔记之间的有向边（知识图谱阶段 A：仅笔记节点）
+model NoteLink {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  fromNoteId String
+  toNoteId   String
+  fromNote   Note     @relation("NoteLinksFrom", fields: [fromNoteId], references: [id], onDelete: Cascade)
+  toNote     Note     @relation("NoteLinksTo", fields: [toNoteId], references: [id], onDelete: Cascade)
+  createdAt  DateTime @default(now())
+
+  @@unique([fromNoteId, toNoteId])
+  @@index([userId])
+  @@index([fromNoteId])
+  @@index([toNoteId])
+}
+
+/// 上传到私有知识库的资料（PDF / Word / Markdown / Text / Web）
+model KnowledgeSource {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title       String
+  kind        String
+  mimeType    String?
+  fileName    String?
+  fileSize    Int?
+  storageKey  String?
+  sourceUrl   String?
+  parseStatus String   @default("pending")
+  indexStatus String   @default("pending")
+  /// 解析后的全文（可选；大文本建议后续改对象存储）
+  extractedText String? @db.Text
+  parseError  String?  @db.Text
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  chunks       SourceChunk[]
+  projectLinks StudyProjectSource[]
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([userId, parseStatus])
+  @@index([userId, indexStatus])
+}
+
+/// 资料解析后的分块元数据（向量仍可用现有 pgvector 管线单独维护）
+model SourceChunk {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sourceId    String
+  source      KnowledgeSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  chunkIndex  Int
+  content     String   @db.Text
+  tokenCount  Int?
+  pageStart   Int?
+  pageEnd     Int?
+  metadata    Json?
+  createdAt   DateTime @default(now())
+
+  @@unique([sourceId, chunkIndex])
+  @@index([userId, sourceId])
+}
+
+/// 学习/论文项目工作区（用于绑定笔记、资料与阶段目标）
+model StudyProject {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name        String
+  topic       String?
+  description String?  @db.Text
+  status      String   @default("active")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  notes     StudyProjectNote[]
+  sources   StudyProjectSource[]
+  snapshots LearningSnapshot[]
+
+  @@index([userId, status])
+  @@index([userId, updatedAt(sort: Desc)])
+}
+
+/// 项目与笔记的关联
+model StudyProjectNote {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  projectId String
+  project   StudyProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  noteId    String
+  note      Note     @relation(fields: [noteId], references: [id], onDelete: Cascade)
+  role      String?  // main / reference / draft
+  createdAt DateTime @default(now())
+
+  @@unique([projectId, noteId])
+  @@index([userId, projectId])
+}
+
+/// 项目与资料源的关联
+model StudyProjectSource {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  projectId String
+  project   StudyProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  sourceId  String
+  source    KnowledgeSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  role      String?  // core / context / appendix
+  createdAt DateTime @default(now())
+
+  @@unique([projectId, sourceId])
+  @@index([userId, projectId])
+}
+
+/// 可控跨会话记忆（偏好/长期任务/学习进度线索）
+model UserMemory {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  scope       String   @default("nextclaw")
+  key         String
+  value       Json
+  importance  Int      @default(1)
+  lastSeenAt  DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([userId, scope, key])
+  @@index([userId, scope, importance])
+}
+
+/// 定时/事件生成的学习快照（周报、复习建议、思考题等）
+model LearningSnapshot {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  projectId    String?
+  project      StudyProject? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  periodStart  DateTime?
+  periodEnd    DateTime?
+  summary      String   @db.Text
+  recommendations Json?
+  quizItems    Json?
+  createdAt    DateTime @default(now())
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([userId, projectId])
+}
+
+model NoteTag {
+  noteId String
+  tagId  String
+  note   Note @relation(fields: [noteId], references: [id], onDelete: Cascade)
+  tag    Tag  @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([noteId, tagId])
+}
+
+model Conversation {
+  id        String   @id @default(cuid())
+  title     String?
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  messages Message[]
+  notes    Note[]
+}
+
+model Message {
+  id             String       @id @default(cuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  role           MessageRole
+  content        String       @db.Text
+  createdAt      DateTime     @default(now())
+
+  @@index([conversationId, createdAt])
+}
