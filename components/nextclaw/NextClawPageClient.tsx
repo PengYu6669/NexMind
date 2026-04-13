@@ -1,11 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { AppSidebar } from "@/components/layout/AppSidebar";
 import { AppTopBar } from "@/components/layout/AppTopBar";
 import { NextClawCommandBar } from "@/components/nextclaw/NextClawCommandBar";
 import { IntelligenceFeed, type IntelligenceFeedCard } from "@/components/nextclaw/IntelligenceFeed";
-import { AnalysisDashboard } from "@/components/nextclaw/AnalysisDashboard";
+import { AgentOpsPanel } from "@/components/nextclaw/AgentOpsPanel";
 import { NextClawTaskDesk } from "@/components/nextclaw/NextClawTaskDesk";
 import { consumeChatMessageSse } from "@/lib/chat-sse";
 
@@ -46,14 +46,6 @@ function mapFeedDtoToCard(c: ApiFeedCard): IntelligenceFeedCard {
 }
 
 export function NextClawPageClient() {
-  const [memoryEnabled, setMemoryEnabled] = useState(true);
-  const [memoryBusy, setMemoryBusy] = useState(false);
-  const [statusLines, setStatusLines] = useState<string[]>([
-    "冲突/补位信号扫描：对照历史笔记片段做一致性检查。",
-    "技术栈指纹（Tech Stack Fingerprint）：用于外部情报降噪与优先级。",
-    "复习调度：结合 SM2 与到期队列更新间隔。",
-  ]);
-
   const [feedCards, setFeedCards] = useState<IntelligenceFeedCard[] | null>(null);
   const [feedLoading, setFeedLoading] = useState(true);
   const [feedError, setFeedError] = useState<string | null>(null);
@@ -72,32 +64,10 @@ export function NextClawPageClient() {
       };
     }[]
   >([]);
-
-  const [dashLoading, setDashLoading] = useState(true);
-  const [dashboard, setDashboard] = useState<{
-    radar: { label: string; value: number }[];
-    ribbon: { date: string; label: string; cards: number; due: number; overdue: number; heat: number; pulse?: boolean }[];
-    reviewStage: string;
-    retentionPercent: number;
-    dueToday: number;
-    pendingJobs: number;
-    reviewQueue?: {
-      id: string;
-      noteId: string;
-      title: string;
-      stageLabel: string;
-      dueDate?: string;
-      learningCardId?: string | null;
-      prompt?: string;
-    }[];
-  } | null>(null);
+  const [selectedAgentJobId, setSelectedAgentJobId] = useState<string | null>(null);
 
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [commandBusy, setCommandBusy] = useState(false);
-
-  const appendStatus = useCallback((line: string) => {
-    setStatusLines((prev) => [line, ...prev].slice(0, 8));
-  }, []);
 
   const refreshFeed = useCallback(async () => {
     const r = await fetch("/api/nextclaw/feed", { credentials: "include" });
@@ -127,52 +97,17 @@ export function NextClawPageClient() {
     setActiveAgentJobs(Array.isArray(data.activeJobs) ? data.activeJobs : []);
   }, []);
 
-  const refreshDashboard = useCallback(async () => {
-    const r = await fetch("/api/nextclaw/dashboard", { credentials: "include" });
-    if (!r.ok) {
-      if (r.status === 401) throw new Error("请先登录");
-      throw new Error("加载看板失败");
-    }
-    const data = (await r.json()) as {
-      radar?: { label: string; value: number }[];
-      ribbon?: { date: string; label: string; cards: number; due: number; overdue: number; heat: number; pulse?: boolean }[];
-      reviewStage?: string;
-      stats?: { retentionPercent?: number; dueToday?: number; pendingJobs?: number };
-      reviewQueue?: {
-        id: string;
-        noteId: string;
-        title: string;
-        stageLabel: string;
-        dueDate?: string;
-        learningCardId?: string | null;
-        prompt?: string;
-      }[];
-    };
-    setDashboard({
-      radar: data.radar ?? [],
-      ribbon: data.ribbon ?? [],
-      reviewStage: data.reviewStage ?? "L1",
-      retentionPercent: typeof data.stats?.retentionPercent === "number" ? data.stats.retentionPercent : 0,
-      dueToday: typeof data.stats?.dueToday === "number" ? data.stats.dueToday : 0,
-      pendingJobs: typeof data.stats?.pendingJobs === "number" ? data.stats.pendingJobs : 0,
-      reviewQueue: Array.isArray(data.reviewQueue) ? data.reviewQueue : undefined,
-    });
-  }, []);
+  useEffect(() => {
+    if (!selectedAgentJobId) return;
+    if (activeAgentJobs.some((j) => j.id === selectedAgentJobId)) return;
+    setSelectedAgentJobId(null);
+  }, [activeAgentJobs, selectedAgentJobId]);
 
   const bootstrap = useCallback(async () => {
     setFeedLoading(true);
-    setDashLoading(true);
     setFeedError(null);
     try {
-      const [memRes, activeRes] = await Promise.all([
-        fetch("/api/user/nextclaw-memory", { credentials: "include" }),
-        fetch("/api/chat/active?purpose=nextclaw", { credentials: "include" }),
-      ]);
-
-      if (memRes.ok) {
-        const mem = (await memRes.json()) as { memoryEnabled?: boolean };
-        if (typeof mem.memoryEnabled === "boolean") setMemoryEnabled(mem.memoryEnabled);
-      }
+      const activeRes = await fetch("/api/chat/active?purpose=nextclaw", { credentials: "include" });
 
       if (activeRes.ok) {
         const a = (await activeRes.json()) as { conversationId?: string | null };
@@ -181,15 +116,14 @@ export function NextClawPageClient() {
         setFeedError("请先登录后使用 NextClaw。");
       }
 
-      await Promise.all([refreshFeed(), refreshDashboard()]);
+      await refreshFeed();
     } catch (e) {
       setFeedError(e instanceof Error ? e.message : "加载失败");
       setFeedCards([]);
     } finally {
       setFeedLoading(false);
-      setDashLoading(false);
     }
-  }, [refreshDashboard, refreshFeed]);
+  }, [refreshFeed]);
 
   useEffect(() => {
     void bootstrap();
@@ -203,34 +137,12 @@ export function NextClawPageClient() {
     return () => window.clearInterval(timer);
   }, [activeAgentJobs.length, refreshFeed]);
 
-  const toggleMemory = async () => {
-    setMemoryBusy(true);
-    try {
-      const next = !memoryEnabled;
-      const r = await fetch("/api/user/nextclaw-memory", {
-        method: "PATCH",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ memoryEnabled: next }),
-      });
-      if (!r.ok) throw new Error("保存失败");
-      setMemoryEnabled(next);
-      appendStatus(next ? "已开启：下次对话会更记得你的偏好。" : "已关闭：不再自动带入偏好（已保存的不会丢）。");
-    } catch {
-      appendStatus("开关没保存成功，请稍后再试。");
-    } finally {
-      setMemoryBusy(false);
-    }
-  };
-
   const sendNextClaw = useCallback(
     async (text: string, opts?: { learningCardId?: string; noteId?: string }) => {
       if (!conversationId) {
-        appendStatus("还没连上对话，请刷新页面再试一次。");
         return;
       }
       setCommandBusy(true);
-        appendStatus(`已发送：${text.slice(0, 80)}${text.length > 80 ? "…" : ""}`);
       try {
         const res = await fetch("/api/chat/message", {
           method: "POST",
@@ -249,18 +161,15 @@ export function NextClawPageClient() {
           throw new Error(err?.error || `请求失败 (${res.status})`);
         }
         if (!res.body) throw new Error("响应体为空");
-        const reply = await consumeChatMessageSse(res.body);
-        const short = reply.replace(/\s+/g, " ").trim().slice(0, 360);
-        appendStatus(short ? `回复摘要：${short}${reply.length > 360 ? "…" : ""}` : "已回复，可在中间区域查看。");
+        await consumeChatMessageSse(res.body);
         void refreshFeed();
-        void refreshDashboard();
-      } catch (e) {
-        appendStatus(e instanceof Error ? e.message : "发送失败");
+      } catch {
+        // noop: errors are surfaced in feed/task UI
       } finally {
         setCommandBusy(false);
       }
     },
-    [appendStatus, conversationId, refreshDashboard, refreshFeed],
+    [conversationId, refreshFeed],
   );
 
   return (
@@ -285,8 +194,7 @@ export function NextClawPageClient() {
               <NextClawTaskDesk
                 className="h-full"
                 onTasksChanged={() => {
-                  appendStatus("学习进度已更新。");
-                  void Promise.all([refreshFeed(), refreshDashboard()]);
+                  void refreshFeed();
                 }}
               />
             </div>
@@ -298,6 +206,7 @@ export function NextClawPageClient() {
               loading={feedLoading}
               error={feedError}
               activeAgentJobs={feedLoading ? [] : activeAgentJobs}
+              selectedAgentJobId={selectedAgentJobId}
               onAsk={(payload) => {
                 void sendNextClaw(payload.text, {
                   learningCardId: payload.cardId,
@@ -305,24 +214,18 @@ export function NextClawPageClient() {
                 });
               }}
               onAfterReviewScore={() => {
-                void Promise.all([refreshFeed(), refreshDashboard()]);
+                void refreshFeed();
               }}
             />
           </main>
 
           <aside className="hidden min-h-0 w-[28%] min-w-[280px] flex-col overflow-hidden border-l border-outline-variant/10 bg-surface-container-lowest/20 glass-panel xl:flex">
-            <AnalysisDashboard
-              loading={dashLoading}
-              radar={dashboard?.radar}
-              ribbon={dashboard?.ribbon}
-              reviewStage={dashboard?.reviewStage}
-              retentionPercent={dashboard?.retentionPercent ?? 0}
-              dueToday={dashboard?.dueToday}
-              pendingJobs={dashboard?.pendingJobs ?? pendingJobs}
-              reviewQueue={dashboard?.reviewQueue}
-              onAfterReviewScore={() => {
-                void Promise.all([refreshFeed(), refreshDashboard()]);
-              }}
+            <AgentOpsPanel
+              loading={feedLoading}
+              jobs={feedLoading ? [] : activeAgentJobs}
+              pendingJobs={pendingJobs}
+              selectedJobId={selectedAgentJobId}
+              onSelectJob={(jobId) => setSelectedAgentJobId(jobId)}
             />
           </aside>
         </div>

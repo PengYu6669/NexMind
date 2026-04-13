@@ -12,6 +12,7 @@ import {
   Pin,
   Sparkles,
 } from "lucide-react";
+import { NextClawWorkflowGraph } from "@/components/nextclaw/NextClawWorkflowGraph";
 
 type FeedCardType = "conflict" | "external_update" | "review";
 type FeedDbType = "REVIEW" | "FILL_GAP" | "PITFALL" | "CONFLICT" | "RELATED" | "EXTERNAL" | "AUDIT";
@@ -130,6 +131,7 @@ export function IntelligenceFeed({
   loading,
   error,
   activeAgentJobs,
+  selectedAgentJobId,
   onAsk,
   onAfterReviewScore,
 }: {
@@ -139,6 +141,8 @@ export function IntelligenceFeed({
   error?: string | null;
   /** 自治 Agent 进行中任务（来自 GET /api/nextclaw/feed.activeJobs） */
   activeAgentJobs?: IntelligenceFeedAgentJob[] | null;
+  /** 若指定，则优先展示该 job 的工作流 */
+  selectedAgentJobId?: string | null;
   onAsk?: (payload: { cardId: string; noteId?: string; text: string }) => void;
   onAfterReviewScore?: () => void;
 }) {
@@ -201,8 +205,6 @@ export function IntelligenceFeed({
 
   const [askOpen, setAskOpen] = useState<Record<string, boolean>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
-  const [agentLogExpanded, setAgentLogExpanded] = useState(false);
-  const [stickyAgentJob, setStickyAgentJob] = useState<IntelligenceFeedAgentJob | null>(null);
   const [answerByCardId, setAnswerByCardId] = useState<Record<string, string>>({});
   const [aiBusyByCardId, setAiBusyByCardId] = useState<Record<string, boolean>>({});
   const [aiErrorByCardId, setAiErrorByCardId] = useState<Record<string, string | null>>({});
@@ -282,14 +284,14 @@ export function IntelligenceFeed({
     }
   }
 
-  const liveAgentJob = activeAgentJobs?.[0] ?? null;
-  const monitorAgentJob = liveAgentJob ?? stickyAgentJob;
-
-  useEffect(() => {
-    if (!liveAgentJob) return;
-    setStickyAgentJob(liveAgentJob);
-    setAgentLogExpanded(false);
-  }, [liveAgentJob]);
+  const liveAgentJob = useMemo(() => {
+    const jobs = Array.isArray(activeAgentJobs) ? activeAgentJobs : [];
+    if (selectedAgentJobId) {
+      const picked = jobs.find((j) => j.id === selectedAgentJobId);
+      if (picked) return picked;
+    }
+    return jobs[0] ?? null;
+  }, [activeAgentJobs, selectedAgentJobId]);
 
   return (
     <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -356,7 +358,7 @@ export function IntelligenceFeed({
       </div>
 
       <div className="no-scrollbar min-h-0 flex-1 space-y-2.5 overflow-y-auto px-6 py-4">
-        {monitorAgentJob ? (
+        {liveAgentJob ? (
           <div className="sticky top-0 z-10 rounded-2xl border border-primary/30 bg-primary/5 p-4 shadow-sm backdrop-blur-sm">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
@@ -367,16 +369,16 @@ export function IntelligenceFeed({
                   <div className="min-w-0">
                     <div className="truncate text-sm font-black text-on-surface">Agent 实时工作流</div>
                     <div className="mt-0.5 truncate text-[11px] text-on-surface-variant">
-                      {monitorAgentJob.noteTitle}
+                      {liveAgentJob.noteTitle}
                     </div>
                   </div>
                 </div>
                 <div className="mt-2 text-[11px] text-on-surface-variant">
-                  <span className="font-bold text-outline/90">{monitorAgentJob.ui.headline}</span>
-                  {monitorAgentJob.ui.currentStepLabel ? (
+                  <span className="font-bold text-outline/90">{liveAgentJob.ui.headline}</span>
+                  {liveAgentJob.ui.currentStepLabel ? (
                     <>
                       <span className="mx-1 opacity-40">·</span>
-                      <span>{monitorAgentJob.ui.currentStepLabel}</span>
+                      <span>{liveAgentJob.ui.currentStepLabel}</span>
                     </>
                   ) : null}
                 </div>
@@ -384,61 +386,23 @@ export function IntelligenceFeed({
 
               <div className="flex items-center gap-2">
                 <span className="shrink-0 rounded-md bg-surface-container-high/50 px-2 py-1 text-[10px] font-bold text-outline">
-                  {monitorAgentJob.type === "NOTE_LEARN_DEEP" ? "深度模式" : "轻量模式"}
+                  {liveAgentJob.type === "NOTE_LEARN_DEEP" ? "深度模式" : "轻量模式"}
                 </span>
-                {!liveAgentJob ? (
-                  <button
-                    type="button"
-                    onClick={() => setStickyAgentJob(null)}
-                    className="shrink-0 rounded-md border border-outline-variant/20 px-2 py-1 text-[10px] font-bold text-on-surface-variant hover:bg-surface-container-low/40"
-                  >
-                    关闭
-                  </button>
-                ) : null}
               </div>
             </div>
 
             <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-surface-container-highest/50">
               <div
                 className="h-full rounded-full bg-primary/85 transition-[width] duration-300"
-                style={{ width: `${Math.round((monitorAgentJob.ui.progress ?? 0) * 100)}%` }}
+                style={{ width: `${Math.round((liveAgentJob.ui.progress ?? 0) * 100)}%` }}
               />
             </div>
 
-            {(() => {
-              const steps = monitorAgentJob.ui.steps ?? [];
-              if (!steps.length) return null;
-              const shown = agentLogExpanded ? steps : steps.slice(0, 6);
-              return (
-                <div className="mt-3 rounded-xl border border-outline-variant/12 bg-surface-container-lowest/25 px-3 py-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="text-[10px] font-black uppercase tracking-widest text-outline/70">工作记录</div>
-                    {steps.length > 6 ? (
-                      <button
-                        type="button"
-                        onClick={() => setAgentLogExpanded((v) => !v)}
-                        className="text-[10px] font-bold text-primary hover:underline"
-                      >
-                        {agentLogExpanded ? "收起" : `展开全部（${steps.length}）`}
-                      </button>
-                    ) : null}
-                  </div>
-                  <ol className="mt-1 list-decimal space-y-1 pl-4 text-[12px] leading-relaxed text-on-surface-variant">
-                    {shown.map((s) => (
-                      <li key={s.id}>
-                        <span className="text-on-surface/90">{s.label}</span>
-                        <span className="ml-1 rounded bg-surface-container-highest/45 px-1 text-[10px] text-outline/90">
-                          {s.status}
-                        </span>
-                        {s.toolSummary ? (
-                          <div className="mt-0.5 text-[11px] text-outline/80">{s.toolSummary}</div>
-                        ) : null}
-                      </li>
-                    ))}
-                  </ol>
-                </div>
-              );
-            })()}
+            {liveAgentJob.ui.steps?.length ? (
+              <div className="mt-3 rounded-xl border border-outline-variant/12 bg-surface-container-lowest/25 p-2">
+                <NextClawWorkflowGraph steps={liveAgentJob.ui.steps} />
+              </div>
+            ) : null}
           </div>
         ) : null}
 

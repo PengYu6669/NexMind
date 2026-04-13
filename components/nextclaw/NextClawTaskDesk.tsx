@@ -86,8 +86,10 @@ export function NextClawTaskDesk({
   const [dragOver, setDragOver] = useState(false);
   const [feedFocused, setFeedFocused] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [autoExpandedOnce, setAutoExpandedOnce] = useState(false);
   const [noteDropdownOpen, setNoteDropdownOpen] = useState(false);
   const noteDropdownRef = useRef<HTMLDivElement | null>(null);
+  const [overrideUrlByJobId, setOverrideUrlByJobId] = useState<Record<string, string>>({});
 
   useEffect(() => {
     if (!noteDropdownOpen) return;
@@ -203,33 +205,47 @@ export function NextClawTaskDesk({
     setExpandedId(null);
   }
 
-  async function retryTask(task: TaskItem) {
-    if (!task.noteId) return;
-    const mode = task.type === "NOTE_LEARN_DEEP" ? "deep" : "lite";
+  async function controlTask(task: TaskItem, action: "pause" | "resume") {
     setBusy(true);
     setErr(null);
     try {
-      const r = await fetch("/api/nextclaw/tasks", {
+      const r = await fetch(`/api/nextclaw/tasks/${task.id}`, {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ noteId: task.noteId, mode }),
+        body: JSON.stringify({ action }),
       });
       const data = (await r.json().catch(() => null)) as { error?: string; job?: { id?: string } } | null;
-      if (!r.ok) throw new Error(data?.error || "重试任务失败");
-      const nextJobId = typeof data?.job?.id === "string" ? data.job.id : null;
-      if (nextJobId) {
-        // 重试成功后清掉旧任务卡片，保持“就地续跑”的心智模型
-        await fetch(`/api/nextclaw/tasks/${task.id}`, {
-          method: "DELETE",
-          credentials: "include",
-        }).catch(() => null);
-      }
+      if (!r.ok) throw new Error(data?.error || "任务操作失败");
       await refresh();
+      const nextJobId = typeof data?.job?.id === "string" ? data.job.id : null;
       if (nextJobId) setExpandedId(nextJobId);
       onTasksChanged?.();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "重试失败");
+      setErr(e instanceof Error ? e.message : "任务操作失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function overrideSource(taskId: string) {
+    const url = (overrideUrlByJobId[taskId] ?? "").trim();
+    if (!url) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const r = await fetch(`/api/nextclaw/tasks/${taskId}`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "override_source", url }),
+      });
+      const data = (await r.json().catch(() => null)) as { error?: string; job?: { id?: string } } | null;
+      if (!r.ok) throw new Error(data?.error || "设置来源失败");
+      await refresh();
+      onTasksChanged?.();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "设置来源失败");
     } finally {
       setBusy(false);
     }
@@ -255,9 +271,10 @@ export function NextClawTaskDesk({
 
   useEffect(() => {
     if (!activeTaskId) return;
-    if (expandedId === activeTaskId) return;
+    if (autoExpandedOnce) return;
     setExpandedId(activeTaskId);
-  }, [activeTaskId, expandedId]);
+    setAutoExpandedOnce(true);
+  }, [activeTaskId, autoExpandedOnce]);
 
   const feedGlow = feedFocused || dragOver;
 
@@ -503,6 +520,36 @@ export function NextClawTaskDesk({
                   </button>
                   {open ? (
                     <div className="space-y-1.5 border-t border-outline-variant/5 bg-surface-container-low/20 px-2 py-1.5">
+                      {t.status !== "RUNNING" &&
+                      ui?.steps?.some((s) => s.id === "hitl-need-url") ? (
+                        <div className="rounded-xl border border-primary/25 bg-primary/10 p-2">
+                          <div className="text-[10px] font-black text-primary">需要你提供来源 URL</div>
+                          <div className="mt-1 text-[10px] leading-snug text-on-surface-variant">
+                            搜索无结果或不可用。粘贴一个可阅读的网页 URL 后继续执行（会跳过自动筛选）。
+                          </div>
+                          <div className="mt-2 flex items-center gap-1.5">
+                            <input
+                              value={overrideUrlByJobId[t.id] ?? ""}
+                              onChange={(e) =>
+                                setOverrideUrlByJobId((m) => ({ ...m, [t.id]: e.target.value }))
+                              }
+                              placeholder="https://..."
+                              className="min-w-0 flex-1 rounded-lg border border-outline-variant/20 bg-surface-container-low/40 px-2 py-1 text-[11px] text-on-surface outline-none placeholder:text-outline/45 focus:ring-1 focus:ring-primary/25"
+                            />
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                void overrideSource(t.id);
+                              }}
+                              className="shrink-0 rounded-lg bg-primary px-2.5 py-1 text-[11px] font-black text-white hover:bg-primary/90 disabled:opacity-50"
+                            >
+                              继续
+                            </button>
+                          </div>
+                        </div>
+                      ) : null}
                       {ui?.steps?.length ? (
                         <ol className="list-decimal space-y-1 pl-4 text-[10px] leading-relaxed text-on-surface-variant">
                           {ui.steps.map((s) => (
@@ -535,17 +582,30 @@ export function NextClawTaskDesk({
                             笔记
                           </a>
                         ) : null}
-                        {t.noteId ? (
+                        {t.status === "RUNNING" || t.status === "PENDING" ? (
                           <button
                             type="button"
                             disabled={busy}
                             onClick={(e) => {
                               e.stopPropagation();
-                              void retryTask(t);
+                              void controlTask(t, "pause");
                             }}
-                            className="text-[10px] text-on-surface-variant hover:text-on-surface disabled:opacity-50"
+                            className="text-[10px] text-amber-500 hover:text-amber-400 disabled:opacity-50"
                           >
-                            重试
+                            中断
+                          </button>
+                        ) : null}
+                        {t.status === "FAILED" || t.status === "CANCELLED" ? (
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void controlTask(t, "resume");
+                            }}
+                            className="text-[10px] text-primary hover:text-primary/90 disabled:opacity-50"
+                          >
+                            继续执行
                           </button>
                         ) : null}
                         {t.status !== "RUNNING" ? (

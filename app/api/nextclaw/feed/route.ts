@@ -3,6 +3,7 @@ import { getAuthUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { learningCardToFeedDto } from "@/lib/nextclaw-feed";
 import { buildTaskUiPayload } from "@/lib/nextclaw-task-ui";
+import { scheduleLearningJobsProcessing } from "@/lib/learning-jobs-kickoff";
 
 /** 智能流：跨笔记聚合学习卡片（对齐 PRD · Intelligence Feed） */
 export async function GET(req: Request) {
@@ -63,6 +64,11 @@ export async function GET(req: Request) {
       where: { userId: user.id, status: { in: ["PENDING", "RUNNING"] } },
     }),
   ]);
+
+  // 自愈：若前端正在频繁轮询但队列未推进，则在响应后再 kick 一次处理（不阻塞 feed）。
+  if (pendingJobs > 0) {
+    scheduleLearningJobsProcessing("feed-poll", 6);
+  }
 
   const noteIds = [...new Set(cardsRaw.map((c) => c.noteId))];
   const reviews = await prisma.reviewItem.findMany({

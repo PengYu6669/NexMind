@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { enqueueErrorResponse, runLearningEnqueue } from "@/lib/note-learning-enqueue";
 import { buildTaskUiPayload } from "@/lib/nextclaw-task-ui";
 import { findLearningJobsForTaskDesk } from "@/lib/nextclaw-tasks-query";
+import { scheduleLearningJobsProcessing } from "@/lib/learning-jobs-kickoff";
 
 export async function GET() {
   const user = await getAuthUser();
@@ -11,6 +12,11 @@ export async function GET() {
 
   try {
     const jobs = await findLearningJobsForTaskDesk(user.id, 30);
+
+    // 自愈：任务台轮询时若存在待处理任务，响应后 kick 一次处理（不阻塞列表接口）。
+    if (jobs.some((j) => j.status === "PENDING" || j.status === "RUNNING")) {
+      scheduleLearningJobsProcessing("tasks-poll", 6);
+    }
 
     const tasks = await Promise.all(
       jobs.map(async (j) => {

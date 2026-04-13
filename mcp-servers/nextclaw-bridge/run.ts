@@ -144,7 +144,8 @@ server.registerTool(
       query: z.string().min(1),
       topK: z.number().int().min(1).max(10).optional(),
       freshness: z.enum(["day", "week", "month", "year", "all"]).optional(),
-      engine: z.enum(["baidu", "google", "bing"]).optional(),
+      // 约束：NextClaw 默认只用百度，避免 Google 引擎在国内/网络环境下失败造成阻塞。
+      engine: z.enum(["baidu", "bing"]).optional(),
       gl: z.string().optional(),
       hl: z.string().optional(),
     },
@@ -160,7 +161,8 @@ server.registerTool(
     const k = topK ?? 5;
     try {
       const preferredEngine = (engine ?? process.env.NEXTCLAW_SERPAPI_ENGINE ?? "baidu").toLowerCase();
-      const fallbackEngine = preferredEngine === "baidu" ? "google" : "baidu";
+      // 强制限制：只允许 baidu/bing；任何未知/不被支持的值都回退到 baidu
+      const normalizedEngine = preferredEngine === "bing" ? "bing" : "baidu";
       const executeSearch = async (engineName: string) => {
       const u = new URL("https://serpapi.com/search.json");
       u.searchParams.set("api_key", apiKey);
@@ -184,7 +186,14 @@ server.registerTool(
         });
         const data = (await res.json().catch(() => null)) as any;
         if (!res.ok) return { ok: false as const, error: "SERPAPI_HTTP_ERROR", detail: { status: res.status, data } };
-        if (data?.error) return { ok: false as const, error: "SERPAPI_ERROR", detail: String(data.error) };
+        if (data?.error) {
+          const detail = String(data.error);
+          // 无结果属于“可降级”情况：返回 ok=true + 空 results，让上层跳过联网继续跑，而不是整条链路失败。
+          if (/hasn't returned any results/i.test(detail)) {
+            return { ok: true as const, engine: engineName, results: [] as any[], warning: detail };
+          }
+          return { ok: false as const, error: "SERPAPI_ERROR", detail };
+        }
         const results = (data?.organic_results ?? []) as any[];
         const simplified = results.slice(0, k).map((r) => ({
           title: String(r?.title ?? "").trim(),
@@ -194,15 +203,7 @@ server.registerTool(
         return { ok: true as const, engine: engineName, results: simplified };
       };
 
-      let found = await executeSearch(preferredEngine);
-      const noResultError =
-        !found.ok &&
-        found.error === "SERPAPI_ERROR" &&
-        typeof found.detail === "string" &&
-        /hasn't returned any results/i.test(found.detail);
-      if (noResultError) {
-        found = await executeSearch(fallbackEngine);
-      }
+      const found = await executeSearch(normalizedEngine);
 
       if (!found.ok) {
         return {
@@ -210,8 +211,20 @@ server.registerTool(
           content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: found.error, detail: found.detail }) }],
         };
       }
+      const warning = (found as any).warning;
       return {
-        content: [{ type: "text" as const, text: JSON.stringify({ ok: true, query, engine: found.engine, results: found.results }) }],
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({
+              ok: true,
+              query,
+              engine: found.engine,
+              results: found.results,
+              ...(warning ? { warning } : {}),
+            }),
+          },
+        ],
       };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
