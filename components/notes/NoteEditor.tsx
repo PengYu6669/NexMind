@@ -286,6 +286,7 @@ export function NoteEditor({
   const [dirty, setDirty] = useState(false);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [aiBusy, setAiBusy] = useState(false);
+  const [aiRunningLabel, setAiRunningLabel] = useState<string>("");
   const [aiSummaryBusy, setAiSummaryBusy] = useState(false);
   const [aiSummary, setAiSummary] = useState<string>("");
   const suppressNextUpdateRef = useRef(false);
@@ -741,7 +742,7 @@ export function NoteEditor({
     setDirty(true);
   }
 
-  type NoteAiAction = "summary" | "expand" | "grammar" | "tone" | "polish" | "outline";
+  type NoteAiAction = "summary" | "expand" | "polish" | "outline" | "qa" | "actions";
 
   function getSelectionPlainTextOrWhole(): string {
     if (!editor) return "";
@@ -843,7 +844,20 @@ export function NoteEditor({
     const html = markdownOrHtmlToHtml(markdown);
 
     const { from, to } = editor.state.selection;
-    // 有选区：只替换选区；无选区：替换全文
+    // 设计原则：
+    // - expand（扩充内容）是“改写原文”，保留覆盖行为
+    // - outline/qa/actions 是“派生结果”，默认非破坏：保留原文并追加 AI 区块
+    if (action === "outline" || action === "qa" || action === "actions") {
+      const actionTitle =
+        action === "outline" ? "整理大纲" : action === "qa" ? "提炼问答" : "行动清单";
+      const blockHtml = markdownOrHtmlToHtml(
+        `\n\n---\n\n### AI 专家结果：${actionTitle}\n\n${markdown}\n`
+      );
+      editor.chain().focus("end").insertContent(blockHtml).run();
+      return;
+    }
+
+    // 其余动作：有选区替换选区；无选区替换全文
     if (from === to) {
       editor.commands.setContent(html);
     } else {
@@ -874,12 +888,14 @@ export function NoteEditor({
     if (!editor) return;
     setError(null);
     setAiBusy(true);
+    setAiRunningLabel("润色中...");
     try {
       await applyMarkdownToEditor("polish");
     } catch (e) {
       setError(e instanceof Error ? e.message : "AI 润色失败");
     } finally {
       setAiBusy(false);
+      setAiRunningLabel("");
     }
   }
 
@@ -887,14 +903,24 @@ export function NoteEditor({
     if (!editor) return;
     setError(null);
     setAiBusy(true);
+    const actionLabelMap: Record<typeof action, string> = {
+      expand: "扩充内容",
+      outline: "整理大纲",
+      qa: "提炼问答",
+      actions: "行动清单",
+    };
+    setAiRunningLabel(`${actionLabelMap[action]}处理中...`);
     try {
       await applyMarkdownToEditor(action);
     } catch (e) {
       setError(e instanceof Error ? e.message : `AI 专家 ${action} 失败`);
     } finally {
       setAiBusy(false);
+      setAiRunningLabel("");
     }
   }
+
+  const hasSelection = !!editor && editor.state.selection.from !== editor.state.selection.to;
 
   async function uploadAndInsertImage(file: File) {
     if (!editor) return;
@@ -1144,6 +1170,14 @@ export function NoteEditor({
       <aside className="w-80 bg-surface-container-low/50 border-l border-outline-variant/10 py-10 px-6 flex flex-col gap-10">
         <section>
           <h3 className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-4">AI 专家选项</h3>
+          <div className="mb-3 rounded-lg border border-outline-variant/15 bg-surface-container-lowest/70 px-3 py-2 text-[11px] text-on-surface-variant">
+            当前作用范围：{hasSelection ? "选中片段" : "全文"}
+          </div>
+          {aiBusy && aiRunningLabel ? (
+            <div className="mb-3 rounded-lg border border-primary/20 bg-primary/8 px-3 py-2 text-[11px] text-primary">
+              {aiRunningLabel}
+            </div>
+          ) : null}
           <div className="space-y-2">
             <button
               type="button"
@@ -1160,36 +1194,36 @@ export function NoteEditor({
             <button
               type="button"
               className="w-full flex items-center justify-between p-3 bg-surface-container-lowest hover:bg-surface-container transition-colors rounded-xl group"
-              onClick={() => void runAiExpert("grammar")}
-              disabled={aiBusy}
-            >
-              <div className="flex items-center gap-3">
-                <MaterialIcon name="spellcheck" className="text-slate-400 group-hover:text-primary transition-colors" />
-                <span className="text-xs font-medium text-on-surface-variant">纠正语法</span>
-              </div>
-              <MaterialIcon name="chevron_right" className="text-slate-600 text-sm" />
-            </button>
-            <button
-              type="button"
-              className="w-full flex items-center justify-between p-3 bg-surface-container-lowest hover:bg-surface-container transition-colors rounded-xl group"
-              onClick={() => void runAiExpert("tone")}
-              disabled={aiBusy}
-            >
-              <div className="flex items-center gap-3">
-                <MaterialIcon name="neurology" className="text-slate-400 group-hover:text-primary transition-colors" />
-                <span className="text-xs font-medium text-on-surface-variant">改变语气</span>
-              </div>
-              <MaterialIcon name="chevron_right" className="text-slate-600 text-sm" />
-            </button>
-            <button
-              type="button"
-              className="w-full flex items-center justify-between p-3 bg-surface-container-lowest hover:bg-surface-container transition-colors rounded-xl group"
               onClick={() => void runAiExpert("outline")}
               disabled={aiBusy}
             >
               <div className="flex items-center gap-3">
                 <MaterialIcon name="format_list_bulleted" className="text-slate-400 group-hover:text-primary transition-colors" />
                 <span className="text-xs font-medium text-on-surface-variant">整理大纲</span>
+              </div>
+              <MaterialIcon name="chevron_right" className="text-slate-600 text-sm" />
+            </button>
+            <button
+              type="button"
+              className="w-full flex items-center justify-between p-3 bg-surface-container-lowest hover:bg-surface-container transition-colors rounded-xl group"
+              onClick={() => void runAiExpert("qa")}
+              disabled={aiBusy}
+            >
+              <div className="flex items-center gap-3">
+                <MaterialIcon name="quiz" className="text-slate-400 group-hover:text-primary transition-colors" />
+                <span className="text-xs font-medium text-on-surface-variant">提炼问答</span>
+              </div>
+              <MaterialIcon name="chevron_right" className="text-slate-600 text-sm" />
+            </button>
+            <button
+              type="button"
+              className="w-full flex items-center justify-between p-3 bg-surface-container-lowest hover:bg-surface-container transition-colors rounded-xl group"
+              onClick={() => void runAiExpert("actions")}
+              disabled={aiBusy}
+            >
+              <div className="flex items-center gap-3">
+                <MaterialIcon name="checklist" className="text-slate-400 group-hover:text-primary transition-colors" />
+                <span className="text-xs font-medium text-on-surface-variant">行动清单</span>
               </div>
               <MaterialIcon name="chevron_right" className="text-slate-600 text-sm" />
             </button>

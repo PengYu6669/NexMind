@@ -17,7 +17,13 @@ export async function POST(req: Request) {
       ? Math.max(1, Math.min(15, Math.floor(rawK)))
       : 3;
 
-  const hits = await ragSearch({ userId: user.id, query, topK, noteId: noteId || undefined });
-  return NextResponse.json({ hits });
+  try {
+    const hits = await ragSearch({ userId: user.id, query, topK, noteId: noteId || undefined });
+    return NextResponse.json({ hits });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "搜索失败";
+    console.error("[api/search] ragSearch failed:", e);
+    return NextResponse.json({ error: msg }, { status: 500 });
+  }
 }
 

@@ -224,6 +224,9 @@ model KnowledgeSource {
   id          String   @id @default(cuid())
   userId      String
   user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// 聊天附件等：绑定会话，便于 RAG 仅检索当前对话上传的资料
+  conversationId String?
+  conversation   Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
   title       String
   kind        String
   mimeType    String?
@@ -245,6 +248,7 @@ model KnowledgeSource {
   @@index([userId, createdAt(sort: Desc)])
   @@index([userId, parseStatus])
   @@index([userId, indexStatus])
+  @@index([conversationId])
 }
 
 /// 资料解析后的分块元数据（向量仍可用现有 pgvector 管线单独维护）
@@ -372,6 +376,7 @@ model Conversation {
 
   messages Message[]
   notes    Note[]
+  knowledgeSources KnowledgeSource[]
 }
 
 model Message {

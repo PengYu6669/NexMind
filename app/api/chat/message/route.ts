@@ -12,6 +12,7 @@ import {
   isNextClawMemoryInjectEnabled,
 } from "@/lib/nextclaw-memory";
 import { nextClawAntiFillInBlankExtraPrompt } from "@/lib/nextclaw-intent";
+import { ensureKnowledgeSourceIndexed } from "@/lib/knowledge-source-process";
 
 function mapToAiRole(role: "USER" | "ASSISTANT" | "SYSTEM"): "user" | "assistant" | "system" {
   if (role === "USER") return "user";
@@ -36,6 +37,8 @@ export async function POST(req: Request) {
     nextclaw?: boolean;
     /** NextClaw 预设自动执行：由后端在回答结束后自动生成“学习笔记版”并落库 */
     autonomousStudy?: boolean;
+    /** 本会话已上传并入库的聊天附件（KnowledgeSource.id） */
+    attachmentSourceIds?: string[];
   };
   const content = body.content?.trim();
   if (!content) return NextResponse.json({ error: "缺少 content" }, { status: 400 });
@@ -45,6 +48,7 @@ export async function POST(req: Request) {
   let focusNoteId = body.noteId?.trim() || "";
   let focusNote: { title: string; content: string } | null = null;
   let learningCardBlock = "";
+  let attachmentTextBlock = "";
 
   const learningCardId = body.learningCardId?.trim();
   if (learningCardId) {
@@ -128,6 +132,47 @@ export async function POST(req: Request) {
     conversationId = conv.id;
   }
 
+  const attachmentSourceIds = Array.isArray(body.attachmentSourceIds)
+    ? body.attachmentSourceIds.map((x) => String(x).trim()).filter(Boolean)
+    : [];
+  if (attachmentSourceIds.length) {
+    const rows = await prisma.knowledgeSource.findMany({
+      where: { id: { in: attachmentSourceIds }, userId: user.id },
+      select: { id: true, conversationId: true },
+    });
+    const ok = new Map(rows.map((r) => [r.id, r.conversationId]));
+    for (const id of attachmentSourceIds) {
+      if (!ok.has(id)) {
+        return NextResponse.json({ error: "附件不存在或无权访问" }, { status: 403 });
+      }
+      if (ok.get(id) !== conversationId) {
+        return NextResponse.json({ error: "附件不属于当前会话" }, { status: 400 });
+      }
+    }
+    for (const id of attachmentSourceIds) {
+      await ensureKnowledgeSourceIndexed(id);
+    }
+    const sources = await prisma.knowledgeSource.findMany({
+      where: { id: { in: attachmentSourceIds }, userId: user.id },
+      select: { id: true, title: true, extractedText: true, parseStatus: true, parseError: true },
+    });
+    const parts = sources
+      .map((s, idx) => {
+        const text = (s.extractedText || "").trim().slice(0, 3500);
+        if (text) {
+          return `【附件 ${idx + 1}：${s.title}】\n${text}`;
+        }
+        if (s.parseStatus === "failed") {
+          return `【附件 ${idx + 1}：${s.title}】\n（解析失败：${s.parseError || "未知错误"}）`;
+        }
+        return `【附件 ${idx + 1}：${s.title}】\n（附件已上传，文本解析尚未完成）`;
+      })
+      .filter(Boolean);
+    attachmentTextBlock = parts.length
+      ? `【本轮对话附件文本（优先依据此处作答）】\n${parts.join("\n\n")}`
+      : "";
+  }
+
   const msgCountBefore = await prisma.message.count({ where: { conversationId } });
 
   // 1) 写入用户消息
@@ -176,7 +221,8 @@ export async function POST(req: Request) {
     if (focusNoteId && focusNote) {
       const plain = stripHtmlToText(focusNote.content).slice(0, 12000);
       const focusHeader =
-        `用户已选中笔记《${focusNote.title}》。请优先依据下方「正文摘录」作答，不要编造；可辅以「检索片段」对照；末尾可给出引用编号。`;
+        `用户已选中笔记《${focusNote.title}》。请优先依据下方「正文摘录」作答，不要编造；可辅以「检索片段」对照。\n` +
+        `不要输出引用编号，不要输出“引用：[x]”这类格式。`;
 
       let hits: Awaited<ReturnType<typeof ragSearch>> = [];
       try {
@@ -209,13 +255,23 @@ export async function POST(req: Request) {
       ragBlock = parts.join("\n\n");
     } else {
       const topK = nextClawMode ? 5 : 3;
-      const hits = await ragSearch({ userId: user.id, query: content, topK });
+      const hits = await ragSearch({
+        userId: user.id,
+        query: content,
+        topK,
+        conversationId: conversationId || undefined,
+      });
       if (hits.length) {
         ragBlock =
-          "以下是从用户笔记中检索到的相关片段（仅供参考，回答时请优先基于这些片段，并在末尾给出引用编号）：\n" +
+          "以下是从用户笔记与（如有）本会话附件中检索到的相关片段（仅供参考；回答时请优先基于这些片段，不要编造。\n" +
+          "不要输出引用编号，不要输出“引用：[x]”这类格式）：\n" +
           hits
             .map((h, idx) => {
-              const title = h.noteTitle ? `《${h.noteTitle}》` : "（未命名）";
+              const title = h.sourceId
+                ? `附件《${h.noteTitle || "未命名"}》`
+                : h.noteTitle
+                  ? `笔记《${h.noteTitle}》`
+                  : "（未命名）";
               return `[${idx + 1}] ${title}\n${h.content}`;
             })
             .join("\n\n");
@@ -238,13 +294,19 @@ export async function POST(req: Request) {
   }
 
   const defaultAssistant =
-    "你是 NextClaw 的 AI 助手。请用中文回答，尽量结构化，保持简洁高质量。若提供了“笔记片段”，请优先使用并在回答末尾输出“引用：[1][2]”这样的编号引用。";
+    "你是 NextClaw 的中文笔记 AI 助手。目标是帮助用户理解/整理/复习自己的笔记与知识库内容。\n" +
+    "要求：回答结构清晰、简洁但信息密度高；不编造，不确定就直说并提出需要补充的材料。\n" +
+    "不要输出引用编号，不要输出“引用：[x]”这类格式。";
   const focusAssistant = focusNote
-    ? `你是 NextClaw 的 AI 助手。用户正在针对笔记《${focusNote.title}》提问：请严格围绕该笔记已给出的正文/片段作答；信息不足时请直接说明，不要臆测。若提供了编号片段，回答末尾输出「引用：[1][2]」等形式。`
+    ? `你是 NextClaw 的中文笔记 AI 助手。用户正在针对笔记《${focusNote.title}》提问：\n` +
+      `- 严格围绕该笔记已给出的正文/片段作答；信息不足时请直接说明缺口，不要臆测。\n` +
+      `- 不要输出引用编号，不要输出“引用：[x]”这类格式。`
     : defaultAssistant;
 
   const nextClawPrompt =
-    "你是 NextClaw 智能助手：根据下方知识库片段，帮助用户复习、拓展学习、自测、列计划或整理草稿。要求：语气友好、少黑话；优先依据片段作答、不编造；尽量用短列表与可执行步骤；信息不足时说明缺口并建议补记哪类内容；有编号片段时在末尾标注引用。";
+    "你是 NextClaw 智能笔记助手：根据下方知识库片段与用户输入，帮助用户复习、拓展学习、自测、列计划或整理草稿。\n" +
+    "要求：语气友好、少黑话；优先依据片段作答、不编造；尽量用短列表与可执行步骤；信息不足时说明缺口并建议补记哪类内容。\n" +
+    "不要输出引用编号，不要输出“引用：[x]”这类格式。";
 
   const systemPrompt = nextClawMode
     ? focusNote
@@ -270,7 +332,7 @@ export async function POST(req: Request) {
     ? `【用户长期上下文（来自历史记忆与学习快照，请酌情使用，勿编造）】\n${memoryBlock}`
     : "";
 
-  const systemContent = [systemPrompt, nextClawNoteExtra, memorySection, learningCardBlock, ragBlock]
+  const systemContent = [systemPrompt, nextClawNoteExtra, memorySection, learningCardBlock, attachmentTextBlock, ragBlock]
     .filter(Boolean)
     .join("\n\n");
 
@@ -341,12 +403,15 @@ export async function POST(req: Request) {
             userId: user.id,
             query: `${content}\n${assistantText}`.slice(0, 6000),
             topK: 5,
+            conversationId: conversationId || undefined,
           });
-          const relatedNotesForAi = relatedHits.map((h) => ({
-            noteId: h.noteId,
-            title: h.noteTitle || "无标题",
-            snippet: (h.content || "").slice(0, 600),
-          }));
+          const relatedNotesForAi = relatedHits
+            .filter((h) => h.noteId)
+            .map((h) => ({
+              noteId: h.noteId!,
+              title: h.noteTitle || "无标题",
+              snippet: (h.content || "").slice(0, 600),
+            }));
 
           const focusTitle = focusNote?.title;
 
@@ -401,7 +466,10 @@ export async function POST(req: Request) {
               userId: user.id,
               summary: studyAi.snapshotSummary || "最近学习快照（自动生成）",
               recommendations: {
-                recentNoteTitles: relatedHits.map((h) => h.noteTitle || "无标题").slice(0, 5),
+                recentNoteTitles: relatedHits
+                  .filter((h) => h.noteId)
+                  .map((h) => h.noteTitle || "无标题")
+                  .slice(0, 5),
               },
               quizItems: { quizItems: studyAi.quizItems ?? [], cards: studyAi.cards ?? [] },
             },

@@ -1,6 +1,7 @@
 import { randomBytes } from "crypto";
 import path from "path";
-import { mkdir, writeFile } from "fs/promises";
+import { mkdir, readFile, writeFile } from "fs/promises";
+import { Readable } from "stream";
 import TosClient from "@volcengine/tos-sdk";
 
 function isTosFullyConfigured(): boolean {
@@ -42,6 +43,15 @@ function objectKey(userId: string, storageFileName: string): string {
   return prefix ? `${prefix}/${keyBody}` : keyBody;
 }
 
+async function streamToBuffer(stream: Readable): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  return await new Promise((resolve, reject) => {
+    stream.on("data", (c) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)));
+    stream.on("end", () => resolve(Buffer.concat(chunks)));
+    stream.on("error", reject);
+  });
+}
+
 /** 预签名 GET，默认 7 天；若桶绑定 CDN/自定义域名可设 VOLC_TOS_PUBLIC_BASE_URL 得到稳定链接 */
 function publicUrlForKey(key: string): string {
   const base = process.env.VOLC_TOS_PUBLIC_BASE_URL?.trim();
@@ -70,7 +80,7 @@ export async function uploadChatFile(params: {
   originalName: string;
   buffer: Buffer;
   contentType: string;
-}): Promise<{ url: string; name: string; mimeType: string; size: number }> {
+}): Promise<{ url: string; name: string; mimeType: string; size: number; storageKey: string }> {
   const mime = params.contentType || "application/octet-stream";
   const size = params.buffer.length;
   const displayName = params.originalName.trim() || params.storageFileName;
@@ -90,6 +100,7 @@ export async function uploadChatFile(params: {
       name: displayName,
       mimeType: mime,
       size,
+      storageKey: key,
     };
   }
 
@@ -103,7 +114,37 @@ export async function uploadChatFile(params: {
     name: displayName,
     mimeType: mime,
     size,
+    storageKey: `local:${params.userId}/${params.storageFileName}`,
   };
+}
+
+/** 按上传时返回的 storageKey 读取原始字节（供解析/OCR） */
+export async function downloadChatFileBuffer(params: { storageKey: string }): Promise<Buffer> {
+  const key = params.storageKey.trim();
+  if (!key) throw new Error("缺少 storageKey");
+
+  if (key.startsWith("local:")) {
+    const rest = key.slice("local:".length);
+    const fsPath = path.join(process.cwd(), "public", "uploads", "chat", rest);
+    return readFile(fsPath);
+  }
+
+  if (!isTosFullyConfigured()) {
+    throw new Error("TOS 未配置，无法按 storageKey 拉取对象");
+  }
+  const bucket = process.env.VOLC_TOS_BUCKET!.trim();
+  const out = await getTosClient().getObject({ bucket, key });
+  const body = (out as { data?: unknown }).data ?? (out as { body?: unknown }).body;
+  if (Buffer.isBuffer(body)) return body;
+  if (body instanceof Uint8Array) return Buffer.from(body);
+  if (typeof (body as any)?.arrayBuffer === "function") {
+    const ab = await (body as Blob).arrayBuffer();
+    return Buffer.from(ab);
+  }
+  if (body && typeof (body as Readable).pipe === "function") {
+    return streamToBuffer(body as Readable);
+  }
+  throw new Error("无法读取 TOS 对象内容");
 }
 
 export { isTosFullyConfigured };

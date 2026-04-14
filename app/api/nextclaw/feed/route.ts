@@ -23,7 +23,14 @@ export async function GET(req: Request) {
 
   try {
     const jobRows = await prisma.learningJob.findMany({
-      where: { userId: user.id, status: { in: ["PENDING", "RUNNING"] } },
+      where: {
+        userId: user.id,
+        OR: [
+          { status: { in: ["PENDING", "RUNNING"] } },
+          // HITL：等待用户输入来源 URL 的任务也要保持可见，否则中间工作流与右侧列表会“消失”
+          { status: "CANCELLED", lastError: { contains: "HITL" } },
+        ],
+      },
       orderBy: [{ updatedAt: "desc" }],
       take: 5,
       select: {
@@ -61,7 +68,13 @@ export async function GET(req: Request) {
       },
     }),
     prisma.learningJob.count({
-      where: { userId: user.id, status: { in: ["PENDING", "RUNNING"] } },
+      where: {
+        userId: user.id,
+        OR: [
+          { status: { in: ["PENDING", "RUNNING"] } },
+          { status: "CANCELLED", lastError: { contains: "HITL" } },
+        ],
+      },
     }),
   ]);
 

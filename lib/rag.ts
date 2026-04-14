@@ -45,12 +45,16 @@ function assertEmbeddingMatchesSchema(vec: number[], where: string): void {
 }
 
 export type RagHit = {
-  noteId: string;
+  /** 笔记 chunk；来自聊天附件时为 null */
+  noteId: string | null;
+  /** 知识库/聊天附件 KnowledgeSource.id；笔记检索时为 null */
+  sourceId: string | null;
   chunkId: string;
   chunkIndex: number;
   content: string;
   distance: number;
-  noteTitle?: string;
+  /** 笔记标题或附件显示名 */
+  noteTitle?: string | null;
 };
 
 function getEmbeddingModelName(): string {
@@ -250,7 +254,28 @@ export async function ensureRagSchema(): Promise<void> {
     CREATE INDEX IF NOT EXISTS note_chunks_note_id_idx ON note_chunks (note_id);
   `);
 
+  await prisma.$executeRawUnsafe(`
+    CREATE TABLE IF NOT EXISTS source_embedding_chunks (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      source_id TEXT NOT NULL,
+      chunk_index INT NOT NULL,
+      content TEXT NOT NULL,
+      embedding vector(${dim}) NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+
+  await prisma.$executeRawUnsafe(`
+    CREATE INDEX IF NOT EXISTS source_embedding_chunks_user_id_idx ON source_embedding_chunks (user_id);
+  `);
+
+  await prisma.$executeRawUnsafe(`
+    CREATE INDEX IF NOT EXISTS source_embedding_chunks_source_id_idx ON source_embedding_chunks (source_id);
+  `);
+
   await prisma.$executeRawUnsafe(`DROP INDEX IF EXISTS note_chunks_embedding_hnsw_idx`);
+  await prisma.$executeRawUnsafe(`DROP INDEX IF EXISTS source_embedding_chunks_embedding_hnsw_idx`);
   try {
     await prisma.$executeRawUnsafe(
       `ALTER TABLE note_chunks ALTER COLUMN embedding TYPE vector(${dim}) USING embedding::vector(${dim})`
@@ -258,6 +283,15 @@ export async function ensureRagSchema(): Promise<void> {
   } catch (e) {
     if (process.env.NODE_ENV === "development") {
       console.warn("[rag] note_chunks.embedding 列类型已是 vector(" + dim + ") 或无法自动迁移，可忽略：", e);
+    }
+  }
+  try {
+    await prisma.$executeRawUnsafe(
+      `ALTER TABLE source_embedding_chunks ALTER COLUMN embedding TYPE vector(${dim}) USING embedding::vector(${dim})`
+    );
+  } catch (e) {
+    if (process.env.NODE_ENV === "development") {
+      console.warn("[rag] source_embedding_chunks.embedding 列类型迁移可忽略：", e);
     }
   }
 
@@ -270,6 +304,18 @@ export async function ensureRagSchema(): Promise<void> {
         ) THEN
           CREATE INDEX note_chunks_embedding_hnsw_idx
           ON note_chunks
+          USING hnsw (embedding vector_cosine_ops);
+        END IF;
+      END $$;
+    `);
+    await prisma.$executeRawUnsafe(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_indexes WHERE indexname = 'source_embedding_chunks_embedding_hnsw_idx'
+        ) THEN
+          CREATE INDEX source_embedding_chunks_embedding_hnsw_idx
+          ON source_embedding_chunks
           USING hnsw (embedding vector_cosine_ops);
         END IF;
       END $$;
@@ -413,12 +459,52 @@ export async function indexNoteForRag(params: {
   return { chunks: chunks.length };
 }
 
+export async function deleteKnowledgeSourceRagChunks(sourceId: string): Promise<void> {
+  await ensureRagSchema();
+  await prisma.$executeRawUnsafe(`DELETE FROM source_embedding_chunks WHERE source_id = $1`, sourceId);
+}
+
+export async function indexKnowledgeSourceForRag(params: {
+  userId: string;
+  sourceId: string;
+  title: string;
+  chunks: string[];
+}): Promise<{ chunks: number }> {
+  await ensureRagSchema();
+  await prisma.$executeRawUnsafe(`DELETE FROM source_embedding_chunks WHERE source_id = $1`, params.sourceId);
+
+  const chunks = params.chunks.map((c) => c.trim()).filter(Boolean).slice(0, 60);
+  if (!chunks.length) return { chunks: 0 };
+
+  const vectors = await embedDocumentsUnified(chunks);
+  const dim = getExpectedEmbeddingDim();
+
+  for (let i = 0; i < chunks.length; i++) {
+    const id = `${params.sourceId}:${i}`;
+    const embeddingSql = pgvector.toSql(vectors[i] as number[]);
+    await prisma.$executeRawUnsafe(
+      `INSERT INTO source_embedding_chunks (id, user_id, source_id, chunk_index, content, embedding)
+       VALUES ($1, $2, $3, $4, $5, $6::vector(${dim}))`,
+      id,
+      params.userId,
+      params.sourceId,
+      i,
+      chunks[i],
+      embeddingSql
+    );
+  }
+
+  return { chunks: chunks.length };
+}
+
 export async function ragSearch(params: {
   userId: string;
   query: string;
   topK?: number;
   /** 限定只在该笔记的 chunk 中检索（工作台「选中笔记对话」） */
   noteId?: string;
+  /** 有值时：除全库笔记外，合并「本会话上传的附件」向量块（聊天场景） */
+  conversationId?: string;
 }): Promise<RagHit[]> {
   await ensureRagSchema();
 
@@ -431,12 +517,57 @@ export async function ragSearch(params: {
   const dim = getExpectedEmbeddingDim();
 
   const noteId = params.noteId?.trim();
+  const conversationId = params.conversationId?.trim();
+
+  if (conversationId && !noteId) {
+    const rows = (await prisma.$queryRawUnsafe(
+      `
+      WITH combined AS (
+        SELECT
+          nc.note_id::text AS "noteId",
+          NULL::text AS "sourceId",
+          nc.id AS "chunkId",
+          nc.chunk_index AS "chunkIndex",
+          nc.content AS "content",
+          (nc.embedding <=> ($1::vector(${dim}))) AS "distance",
+          n.title AS "noteTitle",
+          'note'::text AS "kind"
+        FROM note_chunks nc
+        JOIN "Note" n ON n.id = nc.note_id
+        WHERE nc.user_id = $2 AND n.archived = false
+        UNION ALL
+        SELECT
+          NULL::text,
+          ks.id::text,
+          sec.id,
+          sec.chunk_index,
+          sec.content,
+          (sec.embedding <=> ($1::vector(${dim}))),
+          ks.title,
+          'src'::text
+        FROM source_embedding_chunks sec
+        JOIN "KnowledgeSource" ks ON ks.id = sec.source_id
+        WHERE sec.user_id = $2 AND ks."userId" = $2 AND ks."conversationId" = $4
+      )
+      SELECT "noteId", "sourceId", "chunkId", "chunkIndex", "content", "distance", "noteTitle"
+      FROM combined
+      ORDER BY "distance" ASC
+      LIMIT $3
+    `,
+      qSql,
+      params.userId,
+      topK,
+      conversationId
+    )) as RagHit[];
+    return rows ?? [];
+  }
 
   const rows = noteId
     ? ((await prisma.$queryRawUnsafe(
         `
       SELECT
         nc.note_id as "noteId",
+        NULL::text as "sourceId",
         nc.id as "chunkId",
         nc.chunk_index as "chunkIndex",
         nc.content as "content",
@@ -457,6 +588,7 @@ export async function ragSearch(params: {
         `
       SELECT
         nc.note_id as "noteId",
+        NULL::text as "sourceId",
         nc.id as "chunkId",
         nc.chunk_index as "chunkIndex",
         nc.content as "content",

@@ -52,6 +52,9 @@ const ALLOWED_HTML_TAGS = new Set([
 function cleanAssistantMarkdown(text: string): string {
   if (!text) return "";
   return text
+    .replace(/^\s*引用[:：].*$/gim, "")
+    .replace(/\[(\d+)\](?=\s|$|[，。！？；：,.!?;:])/g, "")
+    .replace(/\[(\d+)\]\[(\d+)\]/g, "")
     .replace(/^\s*(---+|\*\*\*+|___+)\s*$/gm, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
@@ -143,6 +146,9 @@ export function AiChatPanel({
   const [sessionsLoading, setSessionsLoading] = useState(true);
   const [switchingSession, setSwitchingSession] = useState(false);
   const [sendLoading, setSendLoading] = useState(false);
+  const [streamStatus, setStreamStatus] = useState<string>("");
+  const [streamReasoning, setStreamReasoning] = useState<string>("");
+  const [streamAnswer, setStreamAnswer] = useState<string>("");
   const [saveLoading, setSaveLoading] = useState(false);
   /** 开启后仅保存勾选的消息；关闭则保存当前会话全部消息 */
   const [pickMessagesForSave, setPickMessagesForSave] = useState(false);
@@ -154,8 +160,30 @@ export function AiChatPanel({
   /** 空字符串 = 全库 RAG；有值 = 只针对该篇笔记 */
   const [selectedNoteId, setSelectedNoteId] = useState("");
   /** 待随下一条消息一并发送的附件（已上传为可访问 URL） */
-  const [pendingAttachments, setPendingAttachments] = useState<{ name: string; url: string }[]>([]);
+  const [pendingAttachments, setPendingAttachments] = useState<
+    { name: string; url: string; sourceId?: string }[]
+  >([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const streamAbortRef = useRef<AbortController | null>(null);
+
+  function mergeReasoningAndAnswer(reasoning: string, answer: string): string {
+    const r = (reasoning || "").trim();
+    const a = (answer || "").trim();
+    if (r && a) {
+      return `> 思考过程（流式）\n>\n${r
+        .split("\n")
+        .map((line) => `> ${line}`)
+        .join("\n")}\n\n${a}`;
+    }
+    if (a) return a;
+    if (r) {
+      return `> 思考过程（流式）\n>\n${r
+        .split("\n")
+        .map((line) => `> ${line}`)
+        .join("\n")}`;
+    }
+    return "";
+  }
 
   async function loadConversationList(): Promise<ConvSummary[]> {
     const r = await fetch("/api/chat/conversations", { credentials: "include" });
@@ -311,9 +339,14 @@ export function AiChatPanel({
   async function uploadAttachments(files: FileList | File[]) {
     const arr = Array.from(files);
     if (!arr.length) return;
+    if (!conversationId) {
+      setError("请先等待会话加载完成后再上传附件");
+      return;
+    }
     for (const file of arr) {
       const fd = new FormData();
       fd.append("file", file);
+      fd.append("conversationId", conversationId);
       try {
         const r = await fetch("/api/chat/attachments", {
           method: "POST",
@@ -323,11 +356,15 @@ export function AiChatPanel({
         const data = (await r.json().catch(() => null)) as {
           url?: string;
           name?: string;
+          sourceId?: string;
           error?: string;
         };
         if (!r.ok) throw new Error(data?.error || "上传失败");
         if (data.url && data.name) {
-          setPendingAttachments((prev) => [...prev, { url: data.url!, name: data.name! }]);
+          setPendingAttachments((prev) => [
+            ...prev,
+            { url: data.url!, name: data.name!, sourceId: data.sourceId },
+          ]);
         }
       } catch (e) {
         setError(e instanceof Error ? e.message : "上传失败");
@@ -402,15 +439,17 @@ export function AiChatPanel({
     }
   ) {
     if (!conversationId || switchingSession) return;
-    const origin = typeof window !== "undefined" ? window.location.origin : "";
-    const attachBlock = pendingAttachments
-      .map((a) => `[附件: ${a.name}](${origin}${a.url})`)
-      .join("\n");
+    // 防御：若上一次请求还没完全释放，先中断
+    streamAbortRef.current?.abort();
+    const controller = new AbortController();
+    streamAbortRef.current = controller;
     let content = (forcedContent ?? input).trim();
-    if (attachBlock) content = content ? `${attachBlock}\n\n${content}` : attachBlock;
     if (!content) return;
 
     setSendLoading(true);
+    setStreamStatus("正在准备上下文...");
+    setStreamReasoning("");
+    setStreamAnswer("");
     setError(null);
     const hideUserBubble = Boolean(opts?.autonomousStudy);
     const shouldDispatchStudySnapshotUpdated = Boolean(isNextClaw && opts?.autonomousStudy);
@@ -428,17 +467,25 @@ export function AiChatPanel({
     ]);
     setInput("");
 
+    const attachmentSourceIds = pendingAttachments
+      .map((a) => a.sourceId)
+      .filter((x): x is string => Boolean(x));
+
+    let streamed = "";
+    let reasoningStreamed = "";
     try {
       const res = await fetch("/api/chat/message", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
+        signal: controller.signal,
         body: JSON.stringify({
           content,
           conversationId,
           ...(selectedNoteId ? { noteId: selectedNoteId } : {}),
           ...(isNextClaw ? { nextclaw: true } : {}),
           ...(opts?.autonomousStudy ? { autonomousStudy: true } : {}),
+          ...(attachmentSourceIds.length ? { attachmentSourceIds } : {}),
         }),
       });
       if (!res.ok) {
@@ -450,12 +497,12 @@ export function AiChatPanel({
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let lineBuf = "";
-      let streamed = "";
       let finalMessage: ChatMessage | null = null;
       let lastUserMessageIdFromServer: string | undefined;
 
       const appendStream = (delta: string) => {
         streamed += delta;
+        setStreamAnswer(streamed);
         setMessages((prev) =>
           prev.map((m) =>
             m.id === STREAM_ASSISTANT_ID
@@ -463,6 +510,10 @@ export function AiChatPanel({
               : m
           )
         );
+      };
+      const appendReasoning = (delta: string) => {
+        reasoningStreamed += delta;
+        setStreamReasoning(reasoningStreamed);
       };
 
       const handleDataPayload = (payload: string) => {
@@ -472,6 +523,7 @@ export function AiChatPanel({
           choices?: { delta?: { content?: string } }[];
           error?: { message?: string };
           nexmind_done?: { message?: ChatMessage; lastUserMessageId?: string };
+          nexmind_status?: { phase?: string; message?: string };
         };
         try {
           json = JSON.parse(raw) as typeof json;
@@ -486,8 +538,17 @@ export function AiChatPanel({
           }
           return;
         }
-        const c = json.choices?.[0]?.delta?.content;
-        if (typeof c === "string" && c.length > 0) appendStream(c);
+        if (json.nexmind_status?.message) {
+          setStreamStatus(json.nexmind_status.message);
+          return;
+        }
+        const d = json.choices?.[0]?.delta as { content?: string; reasoning_content?: string } | undefined;
+        if (typeof d?.reasoning_content === "string" && d.reasoning_content.length > 0) {
+          appendReasoning(d.reasoning_content);
+        }
+        if (typeof d?.content === "string" && d.content.length > 0) {
+          appendStream(d.content);
+        }
       };
 
       while (true) {
@@ -527,14 +588,24 @@ export function AiChatPanel({
             }
           }
         }
-        if (finalMessage) return [...next, finalMessage];
+        if (finalMessage) {
+          const merged = mergeReasoningAndAnswer(streamReasoning || reasoningStreamed, finalMessage.content || "");
+          return [
+            ...next,
+            {
+              ...finalMessage,
+              content: merged || finalMessage.content,
+            },
+          ];
+        }
         if (streamed.trim()) {
+          const merged = mergeReasoningAndAnswer(streamReasoning || reasoningStreamed, streamed);
           return [
             ...next,
             {
               id: `assistant-${Date.now()}`,
               role: "ASSISTANT",
-              content: streamed,
+              content: merged || streamed,
               createdAt: new Date().toISOString(),
             },
           ];
@@ -544,12 +615,38 @@ export function AiChatPanel({
       if (!isNextClaw) void refreshConversationList();
       setPendingAttachments([]);
     } catch (e) {
-      setMessages((prev) =>
-        prev.filter((m) => m.id !== STREAM_ASSISTANT_ID && m.id !== userTempId)
-      );
-      setError(e instanceof Error ? e.message : "发送失败");
+      const aborted =
+        (e instanceof DOMException && e.name === "AbortError") ||
+        (e instanceof Error && /aborted|abort/i.test(e.message));
+      if (aborted) {
+        // 用户主动中断：保留已生成片段（含思考），仅移除占位中的 streaming 消息
+        setMessages((prev) => {
+          const next = prev.filter((m) => m.id !== STREAM_ASSISTANT_ID);
+          const merged = mergeReasoningAndAnswer(streamReasoning || reasoningStreamed, streamAnswer || streamed);
+          if (!merged.trim()) return next;
+          return [
+            ...next,
+            {
+              id: `assistant-abort-${Date.now()}`,
+              role: "ASSISTANT",
+              content: `${merged}\n\n> （本次回答已手动停止）`,
+              createdAt: new Date().toISOString(),
+            },
+          ];
+        });
+        setError("已停止本次生成");
+      } else {
+        setMessages((prev) =>
+          prev.filter((m) => m.id !== STREAM_ASSISTANT_ID && m.id !== userTempId)
+        );
+        setError(e instanceof Error ? e.message : "发送失败");
+      }
     } finally {
+      streamAbortRef.current = null;
       setSendLoading(false);
+      setStreamStatus("");
+      setStreamReasoning("");
+      setStreamAnswer("");
       if (shouldDispatchStudySnapshotUpdated && typeof window !== "undefined") {
         window.dispatchEvent(new CustomEvent("nextclaw_study_snapshot_updated"));
       }
@@ -904,13 +1001,30 @@ export function AiChatPanel({
                       </div>
                       <div className="min-w-0 flex-1">
                         <div className="rounded-2xl rounded-tl-none border border-outline-variant/10 bg-surface-container-low px-5 py-4 text-sm leading-relaxed text-on-surface-variant">
-                          {m.content ? (
+                          {m.id === STREAM_ASSISTANT_ID ? (
+                            <div className="space-y-3">
+                              {streamReasoning ? (
+                                <div className="rounded-xl border border-outline-variant/10 bg-surface-container-lowest/30 px-3 py-2">
+                                  <div className="mb-1 text-[11px] font-medium text-on-surface-variant/90">思考过程</div>
+                                  <div className="whitespace-pre-wrap text-[12px] leading-relaxed text-on-surface-variant/75">
+                                    {streamReasoning}
+                                  </div>
+                                </div>
+                              ) : null}
+                              {streamAnswer ? (
+                                <div
+                                  className="chat-markdown"
+                                  dangerouslySetInnerHTML={{ __html: markdownToSafeHtml(streamAnswer) }}
+                                />
+                              ) : (
+                                <span>{streamStatus || "思考中..."}</span>
+                              )}
+                            </div>
+                          ) : m.content ? (
                             <div
                               className="chat-markdown"
                               dangerouslySetInnerHTML={{ __html: markdownToSafeHtml(m.content) }}
                             />
-                          ) : m.id === STREAM_ASSISTANT_ID ? (
-                            "思考中..."
                           ) : (
                             ""
                           )}
@@ -966,6 +1080,9 @@ export function AiChatPanel({
                 ))}
               </div>
             ) : null}
+            {sendLoading && streamStatus ? (
+              <div className="mb-2 px-1 text-[11px] text-on-surface-variant">{streamStatus}</div>
+            ) : null}
             <div className="absolute -inset-1 rounded-[2rem] bg-gradient-to-r from-primary/20 via-primary-container/10 to-primary/20 opacity-50 blur-xl transition duration-500 group-focus-within:opacity-100" />
             <div className="relative flex items-center gap-3 rounded-full border border-outline-variant/8 bg-surface-container-lowest/35 px-4 py-2.5 glass-panel thinking-glow backdrop-blur-md sm:gap-4 sm:px-5 sm:py-3">
               <button
@@ -1000,11 +1117,17 @@ export function AiChatPanel({
               <button
                 type="button"
                 className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary-container text-white shadow-lg shadow-primary-container/30 transition-all hover:scale-105 active:scale-95 disabled:opacity-60"
-                aria-label="发送"
-                onClick={() => void send()}
-                disabled={!canSend}
+                aria-label={sendLoading ? "停止生成" : "发送"}
+                onClick={() => {
+                  if (sendLoading) {
+                    streamAbortRef.current?.abort();
+                    return;
+                  }
+                  void send();
+                }}
+                disabled={sendLoading ? false : !canSend}
               >
-                <MaterialIcon name={sendLoading ? "hourglass_top" : "arrow_upward"} className="text-white" />
+                <MaterialIcon name={sendLoading ? "stop" : "arrow_upward"} className="text-white" />
               </button>
             </div>
           </div>

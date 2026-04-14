@@ -292,6 +292,34 @@ export function IntelligenceFeed({
     }
     return jobs[0] ?? null;
   }, [activeAgentJobs, selectedAgentJobId]);
+  const [hitlUrl, setHitlUrl] = useState("");
+  const [hitlBusy, setHitlBusy] = useState(false);
+  const [hitlError, setHitlError] = useState<string | null>(null);
+
+  const needUrl = Boolean(liveAgentJob?.ui.steps?.some((s) => s.id === "hitl-need-url"));
+
+  async function submitHitlUrl() {
+    if (!liveAgentJob) return;
+    const url = hitlUrl.trim();
+    if (!url) return;
+    setHitlBusy(true);
+    setHitlError(null);
+    try {
+      const r = await fetch(`/api/nextclaw/tasks/${liveAgentJob.id}`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "override_source", url }),
+      });
+      const data = (await r.json().catch(() => null)) as { error?: string } | null;
+      if (!r.ok) throw new Error(data?.error || "提交来源失败");
+      setHitlUrl("");
+    } catch (e) {
+      setHitlError(e instanceof Error ? e.message : "提交来源失败");
+    } finally {
+      setHitlBusy(false);
+    }
+  }
 
   return (
     <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -401,6 +429,32 @@ export function IntelligenceFeed({
             {liveAgentJob.ui.steps?.length ? (
               <div className="mt-3 rounded-xl border border-outline-variant/12 bg-surface-container-lowest/25 p-2">
                 <NextClawWorkflowGraph steps={liveAgentJob.ui.steps} />
+              </div>
+            ) : null}
+
+            {needUrl ? (
+              <div className="mt-3 rounded-xl border border-primary/25 bg-primary/10 p-3">
+                <div className="text-[11px] font-black text-primary">需要你提供来源 URL</div>
+                <div className="mt-1 text-[11px] leading-snug text-on-surface-variant">
+                  搜索无结果或不可用。粘贴一个可阅读的网页 URL，Agent 会从该来源继续执行。
+                </div>
+                {hitlError ? <div className="mt-1 text-[11px] font-bold text-error">{hitlError}</div> : null}
+                <div className="mt-2 flex items-center gap-2">
+                  <input
+                    value={hitlUrl}
+                    onChange={(e) => setHitlUrl(e.target.value)}
+                    placeholder="https://..."
+                    className="min-w-0 flex-1 rounded-lg border border-outline-variant/20 bg-surface-container-low/40 px-3 py-2 text-[12px] text-on-surface outline-none placeholder:text-outline/45 focus:ring-1 focus:ring-primary/25"
+                  />
+                  <button
+                    type="button"
+                    disabled={hitlBusy}
+                    onClick={() => void submitHitlUrl()}
+                    className="shrink-0 rounded-lg bg-primary px-3 py-2 text-[12px] font-black text-white hover:bg-primary/90 disabled:opacity-50"
+                  >
+                    {hitlBusy ? "提交中…" : "继续"}
+                  </button>
+                </div>
               </div>
             ) : null}
           </div>

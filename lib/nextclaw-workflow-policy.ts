@@ -37,6 +37,16 @@ export function markToolFailureEffect(
   metrics: NextClawExecutionMetrics,
 ) {
   if (result.ok) return;
+  const summary = (result.summary ?? "").toLowerCase();
+  const mcpMissingSignals = ["mcp", "未启用", "暂无本地实现", "not implemented"];
+
+  // audit_content 若因 MCP 未启用/无实现而失败，本质上需要人工介入或开启能力
+  if (toolName === "audit_content" && mcpMissingSignals.some((x) => summary.includes(x))) {
+    metrics.degraded = true;
+    metrics.needHumanIntervention = true;
+    return;
+  }
+
   // 非核心步骤失败允许降级继续，避免整单失败
   if (toolName === "web_search" || toolName === "fetch_url" || toolName === "audit_content") {
     metrics.degraded = true;

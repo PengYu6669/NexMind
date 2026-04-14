@@ -16,6 +16,15 @@ export type LearningPlanStepDraft = {
   title: string;
   /** LLM 建议的工具；synthesize 表示进入生成卡片阶段 */
   tool: PlanToolName | null;
+  /**
+   * 可选：工具参数（由 Planner 直接给出），用于减少 Executor 的兜底逻辑。
+   * 例如：
+   * - read_note: { noteId }
+   * - web_search: { query, topK }
+   * - fetch_url: { url: "$best_url" }
+   * - audit_content: { newContent: "$fetched_markdown" }
+   */
+  toolInput?: Record<string, unknown>;
 };
 
 export type LearningPlanJson = {

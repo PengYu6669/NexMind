@@ -123,7 +123,7 @@ export async function callDashscopeChatCompletionStream(params: {
         const choices = r && Array.isArray(r.choices) ? r.choices : [];
         const first = choices[0] && typeof choices[0] === "object" ? (choices[0] as Record<string, unknown>) : null;
         const deltaObj = first ? asRecord(first.delta) : null;
-        const delta = deltaObj?.content;
+        const delta = deltaObj?.content ?? (deltaObj as { reasoning_content?: unknown })?.reasoning_content;
         if (typeof delta === "string" && delta.length > 0) {
           full += delta;
           params.onDelta(delta);
@@ -181,6 +181,11 @@ export type NexmindChatDonePayload = {
   };
 };
 
+export type NexmindChatStatusPayload = {
+  phase: "llm_stream_started" | "persisting" | "completed";
+  message: string;
+};
+
 /**
  * 透传上游 SSE 字节（去掉厂商自带的 data: [DONE]，以便在落库后追加 nexmind_done 与唯一 [DONE]）。
  * 同时从流中解析 choices[0].delta.content 拼出全文供 onComplete 写入数据库。
@@ -198,6 +203,13 @@ export function pipeChatStreamPersistMetadata(
     async start(controller) {
       const reader = source.getReader();
       try {
+        controller.enqueue(
+          encoder.encode(
+            `data: ${JSON.stringify({
+              nexmind_status: { phase: "llm_stream_started", message: "模型已开始生成..." } satisfies NexmindChatStatusPayload,
+            })}\n\n`
+          )
+        );
         while (true) {
           const { value, done } = await reader.read();
           if (done) break;
@@ -227,7 +239,8 @@ export function pipeChatStreamPersistMetadata(
                 if (json?.error?.message) {
                   throw new Error(json.error.message);
                 }
-                const delta = json?.choices?.[0]?.delta?.content;
+                const d = json?.choices?.[0]?.delta as { content?: string; reasoning_content?: string } | undefined;
+                const delta = d?.content ?? d?.reasoning_content;
                 if (typeof delta === "string") accumulated += delta;
               } catch (e) {
                 if (e instanceof SyntaxError) continue;
@@ -245,9 +258,23 @@ export function pipeChatStreamPersistMetadata(
         }
 
         const full = accumulated.trim();
+        controller.enqueue(
+          encoder.encode(
+            `data: ${JSON.stringify({
+              nexmind_status: { phase: "persisting", message: "正在保存回答..." } satisfies NexmindChatStatusPayload,
+            })}\n\n`
+          )
+        );
         const meta = await onComplete(full || "");
         controller.enqueue(
           encoder.encode(`data: ${JSON.stringify({ nexmind_done: meta })}\n\n`)
+        );
+        controller.enqueue(
+          encoder.encode(
+            `data: ${JSON.stringify({
+              nexmind_status: { phase: "completed", message: "回答完成" } satisfies NexmindChatStatusPayload,
+            })}\n\n`
+          )
         );
         controller.enqueue(encoder.encode(`data: [DONE]\n\n`));
         controller.close();

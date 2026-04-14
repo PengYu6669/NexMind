@@ -56,11 +56,22 @@ export type NextClawLangGraphState = {
   autoAudit: { conflicts?: string[]; fillGaps?: string[]; suggestedNoteIds?: string[] } | undefined;
 
   hitlOverrideUrl: string | undefined;
+
+  waitingForUrl: boolean | undefined;
 };
 
 function pickDefaultUrlFromText(noteText: string): string | null {
   const m = Array.from((noteText ?? "").matchAll(/https?:\/\/[^\s)>\]]+/g)).map((x) => x[0]).filter(Boolean);
   return m[0] ?? null;
+}
+
+function stepStatus(steps: LearningJobStepRecord[] | undefined, id: string): LearningJobStepRecord["status"] | null {
+  const s = Array.isArray(steps) ? steps.find((x) => x.id === id) : undefined;
+  return s?.status ?? null;
+}
+
+function isDone(steps: LearningJobStepRecord[] | undefined, id: string): boolean {
+  return stepStatus(steps, id) === "done";
 }
 
 function nowIso() {
@@ -195,11 +206,25 @@ function buildNextClawGraph() {
     autoAudit: z.any().optional(),
 
     hitlOverrideUrl: z.string().optional(),
+    waitingForUrl: z.boolean().optional(),
   });
 
   const builder = new StateGraph(State)
     .addNode("load_and_retrieve", async (state) => {
     await ensureNotInterrupted(state.jobId);
+
+    // 断点恢复：优先载入 DB 已有 steps，避免重复调用工具/重复写 steps
+    const existingStepsRow = await prisma.learningJob.findUnique({
+      where: { id: state.jobId },
+      select: { steps: true, plan: true, noteId: true, userId: true, type: true, noteUpdatedAt: true },
+    });
+    const existingSteps = Array.isArray(existingStepsRow?.steps)
+      ? (existingStepsRow!.steps as LearningJobStepRecord[])
+      : [];
+    const baseState = existingSteps.length ? { ...state, steps: existingSteps } : state;
+    if (isDone(baseState.steps, "retrieve")) {
+      return baseState;
+    }
 
     const s0: LearningJobStepRecord = {
       id: "retrieve",
@@ -209,13 +234,10 @@ function buildNextClawGraph() {
       toolName: "search_notes",
       at: nowIso(),
     };
-    let next = pushStep(state, s0);
+    let next = pushStep(baseState, s0);
     await flushSteps(next.jobId, next.steps!);
 
-    const job = await prisma.learningJob.findUnique({
-      where: { id: state.jobId },
-      select: { noteId: true, userId: true, type: true, noteUpdatedAt: true, plan: true },
-    });
+    const job = existingStepsRow;
     const hitlOverrideUrl =
       job?.plan &&
       typeof job.plan === "object" &&
@@ -250,7 +272,7 @@ function buildNextClawGraph() {
 
     const byNote = new Map<string, { noteId: string; title: string; snippet: string; distance: number }>();
     for (const h of hits) {
-      if (h.noteId === note.id) continue;
+      if (!h.noteId || h.noteId === note.id) continue;
       const exist = byNote.get(h.noteId);
       if (!exist || h.distance < exist.distance) {
         byNote.set(h.noteId, {
@@ -287,6 +309,7 @@ function buildNextClawGraph() {
   })
     .addNode("auto_reason", async (state) => {
       await ensureNotInterrupted(state.jobId);
+      if (isDone(state.steps, "auto-reason")) return state;
       const s: LearningJobStepRecord = {
         id: "auto-reason",
         phase: "think",
@@ -313,6 +336,7 @@ function buildNextClawGraph() {
     })
     .addNode("auto_web_search", async (state) => {
       await ensureNotInterrupted(state.jobId);
+      if (isDone(state.steps, "auto-web-search")) return state;
       const query = state.autoDecision?.query ?? "";
       const s: LearningJobStepRecord = {
         id: "auto-web-search",
@@ -376,6 +400,7 @@ function buildNextClawGraph() {
     })
     .addNode("hitl_need_url", async (state) => {
       // 进入等待：写一个明确步骤，并把任务置为 CANCELLED（等待用户提供 URL 再继续）
+      if (isDone(state.steps, "hitl-need-url")) return state;
       const s: LearningJobStepRecord = {
         id: "hitl-need-url",
         phase: "think",
@@ -394,10 +419,11 @@ function buildNextClawGraph() {
           lastError: "等待用户提供来源 URL（HITL）",
         },
       });
-      return next;
+      return { ...next, waitingForUrl: true };
     })
     .addNode("auto_filter", async (state) => {
       await ensureNotInterrupted(state.jobId);
+      if (isDone(state.steps, "auto-filter")) return state;
       const s: LearningJobStepRecord = {
         id: "auto-filter",
         phase: "think",
@@ -436,6 +462,7 @@ function buildNextClawGraph() {
     })
     .addNode("auto_fetch", async (state) => {
       await ensureNotInterrupted(state.jobId);
+      if (isDone(state.steps, "auto-fetch")) return state;
       const url = state.autoPick?.selectedUrl ?? "";
       const s: LearningJobStepRecord = {
         id: "auto-fetch",
@@ -482,6 +509,7 @@ function buildNextClawGraph() {
     })
     .addNode("auto_audit", async (state) => {
       await ensureNotInterrupted(state.jobId);
+      if (isDone(state.steps, "auto-audit")) return state;
       const s: LearningJobStepRecord = {
         id: "auto-audit",
         phase: "think",
@@ -536,6 +564,7 @@ function buildNextClawGraph() {
     // state 里有 `plan`，因此节点名必须避开（例如 planner_node）。
     .addNode("planner_node", async (state) => {
     await ensureNotInterrupted(state.jobId);
+    if (isDone(state.steps, "plan")) return state;
 
     const s: LearningJobStepRecord = {
       id: "plan",
@@ -569,10 +598,11 @@ function buildNextClawGraph() {
     next = updateLastStep(next, { status: "done", toolSummary: `steps=${plan.steps.length}` });
     await flushSteps(next.jobId, next.steps!, { plan });
 
-    return { ...next, plan, roleStats };
+    return { ...next, plan, roleStats, metrics: state.metrics ?? next.metrics, toolTraceLines: state.toolTraceLines ?? next.toolTraceLines };
   })
     .addNode("plan_executor", async (state) => {
       await ensureNotInterrupted(state.jobId);
+      if (isDone(state.steps, "plan-exec")) return state;
 
       const planStepsRaw = Array.isArray(state.plan?.steps) ? state.plan!.steps : [];
       const planSteps = planStepsRaw
@@ -620,6 +650,11 @@ function buildNextClawGraph() {
         await ensureNotInterrupted(state.jobId);
         const tool = (ps.tool ?? "noop") as PlanToolName;
 
+        // 断点恢复：计划步骤已完成则跳过
+        if (isDone(next.steps, ps.id)) {
+          continue;
+        }
+
         // synthesize 由 coach 节点统一执行，避免重复
         if (tool === "synthesize") {
           next.steps = next.steps ?? [];
@@ -664,16 +699,54 @@ function buildNextClawGraph() {
         next = pushStep(next, stepRec);
         await flushSteps(next.jobId, next.steps!);
 
+        const planToolInputRaw =
+          (ps as any)?.toolInput && typeof (ps as any).toolInput === "object" && !Array.isArray((ps as any).toolInput)
+            ? ((ps as any).toolInput as Record<string, unknown>)
+            : undefined;
+        const planToolInput = planToolInputRaw ? { ...planToolInputRaw } : undefined;
+
         const toolInput =
           tool === "web_search"
-            ? { query: `学习 ${state.noteTitle ?? ""}（官网 GitHub 文档 教程）`, topK: 5 }
+            ? {
+                query:
+                  (typeof planToolInput?.query === "string" && planToolInput.query.trim()) ||
+                  `学习 ${state.noteTitle ?? ""}（官网 GitHub 文档 教程）`,
+                topK: typeof planToolInput?.topK === "number" ? planToolInput.topK : 5,
+              }
             : tool === "fetch_url"
-              ? { url: defaultUrl }
-              : tool === "audit_content"
-                ? { newContent: state.autoFetched?.markdown ?? "" }
-                : undefined;
+              ? {
+                  url:
+                    (typeof planToolInput?.url === "string" && planToolInput.url.trim() && planToolInput.url !== "$best_url")
+                      ? planToolInput.url.trim()
+                      : defaultUrl,
+                }
+              : tool === "read_note"
+                ? {
+                    ...(typeof planToolInput?.noteId === "string" && planToolInput.noteId.trim()
+                      ? { noteId: planToolInput.noteId.trim() }
+                      : {}),
+                  }
+                : tool === "audit_content"
+                  ? {
+                      newContent:
+                        typeof planToolInput?.newContent === "string" && planToolInput.newContent === "$fetched_markdown"
+                          ? state.autoFetched?.markdown ?? ""
+                          : (typeof planToolInput?.newContent === "string" ? planToolInput.newContent : (state.autoFetched?.markdown ?? "")),
+                    }
+                  : planToolInput;
 
         const role = tool === "audit_content" ? "auditor" : "retriever";
+
+        // HITL：若计划执行遇到 fetch_url 但仍然没有可用 url，则进入等待用户提供来源
+        if (tool === "fetch_url" && typeof (toolInput as any)?.url === "string" && !(toolInput as any).url.trim()) {
+          next = updateLastStep(next, {
+            status: "done",
+            toolSummary: "缺少可用 URL：需要你提供一个来源链接后才能继续（HITL）",
+          });
+          await flushSteps(next.jobId, next.steps!);
+          return { ...next, waitingForUrl: true };
+        }
+
         const r = await callToolWithPolicy({
           jobId: state.jobId,
           role: role as any,
@@ -699,6 +772,11 @@ function buildNextClawGraph() {
         next = updateLastStep(next, { status: r.ok ? "done" : "failed", toolSummary: r.summary });
         await flushSteps(next.jobId, next.steps!);
         if (!r.ok) {
+          // audit_content 属于“可降级”的非核心步骤：失败不应让整单失败（尤其是 MCP 未启用时）
+          if (tool === "audit_content") {
+            skipped += 1;
+            continue;
+          }
           // 保持“计划执行失败即失败”的语义；HITL（提供 URL）走 auto_web_search 的无结果分支，不从这里兜底
           throw new Error(r.summary);
         }
@@ -714,6 +792,7 @@ function buildNextClawGraph() {
     })
     .addNode("coach", async (state) => {
     await ensureNotInterrupted(state.jobId);
+    if (isDone(state.steps, "coach")) return state;
 
     const s: LearningJobStepRecord = {
       id: "coach",
@@ -742,10 +821,11 @@ function buildNextClawGraph() {
     next = updateLastStep(next, { status: "done", toolSummary: `cards=${lite.cards.length}` });
     await flushSteps(next.jobId, next.steps!);
 
-    return { ...next, roleStats, toolTraceLines, coachResult: lite };
+    return { ...next, roleStats, toolTraceLines, coachResult: lite, metrics: state.metrics ?? next.metrics };
   })
     .addNode("persist", async (state: NextClawLangGraphState & { coachResult?: any }) => {
     await ensureNotInterrupted(state.jobId);
+    if (isDone(state.steps, "persist")) return state;
 
     const s: LearningJobStepRecord = {
       id: "persist",
@@ -842,9 +922,10 @@ function buildNextClawGraph() {
     next = updateLastStep(next, { status: "done", toolSummary: `cards=${cards.length}` });
     await flushSteps(next.jobId, next.steps!);
 
-    return { ...next, roleStats };
+    return { ...next, roleStats, metrics: state.metrics ?? next.metrics, toolTraceLines: state.toolTraceLines ?? next.toolTraceLines };
   })
     .addNode("finalize", async (state) => {
+    if (isDone(state.steps, "evaluation") || isDone(state.steps, "evaluation-failed")) return state;
     const metrics = state.metrics ?? createExecutionMetrics();
     const evaluation = toEvaluationSummary(metrics);
 
@@ -919,7 +1000,11 @@ function buildNextClawGraph() {
       (s) => (Array.isArray(s.plan?.steps) && s.plan!.steps.length > 0 ? "exec" : "skip"),
       { exec: "plan_executor", skip: "coach" },
     )
-    .addEdge("plan_executor", "coach")
+    .addConditionalEdges(
+      "plan_executor",
+      (s) => (s.waitingForUrl ? "need_url" : "go"),
+      { need_url: "hitl_need_url", go: "coach" },
+    )
     .addEdge("coach", "persist")
     .addEdge("persist", "finalize")
     .addEdge("finalize", END);
@@ -982,13 +1067,35 @@ export async function runNextClawLangGraphJob(params: {
           autoFetched: resumed.autoFetched,
           autoAudit: resumed.autoAudit,
           hitlOverrideUrl: resumed.hitlOverrideUrl,
+          waitingForUrl: resumed.waitingForUrl ?? false,
         };
         await prisma.learningJob.updateMany({
           where: { id: params.jobId },
           data: { status: "RUNNING", startedAt: new Date(), finishedAt: null },
         });
-        await graph.invoke(initFromCheckpoint, threadConfig);
-        return;
+        try {
+          await graph.invoke(initFromCheckpoint, threadConfig);
+          return;
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          const metrics = initFromCheckpoint.metrics ?? createExecutionMetrics();
+          const evaluation = toEvaluationSummary(metrics);
+          const steps = Array.isArray(initFromCheckpoint.steps) ? [...initFromCheckpoint.steps] : [];
+          steps.push({
+            id: "evaluation-failed",
+            phase: "done",
+            label: "任务评估（失败路径）",
+            status: "failed",
+            at: nowIso(),
+            toolSummary: `err=${msg}; toolCalls=${evaluation.toolCalls}; retries=${evaluation.retries}; degraded=${evaluation.degraded ? "yes" : "no"}; needHuman=${evaluation.needHumanIntervention ? "yes" : "no"}; durationMs=${evaluation.durationMs}`,
+          });
+          await flushSteps(params.jobId, steps);
+          await prisma.learningJob.updateMany({
+            where: { id: params.jobId },
+            data: { status: "FAILED", finishedAt: new Date(), lastError: msg, steps: steps as unknown as Prisma.InputJsonValue },
+          });
+          return;
+        }
       }
     }
   } catch (e) {
@@ -1018,6 +1125,7 @@ export async function runNextClawLangGraphJob(params: {
     autoFetched: undefined,
     autoAudit: undefined,
     hitlOverrideUrl: undefined,
+    waitingForUrl: false,
   };
 
   await prisma.learningJob.updateMany({
@@ -1025,6 +1133,26 @@ export async function runNextClawLangGraphJob(params: {
     data: { status: "RUNNING", startedAt: new Date() },
   });
 
-  await graph.invoke(init, threadConfig);
+  try {
+    await graph.invoke(init, threadConfig);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    const metrics = init.metrics ?? createExecutionMetrics();
+    const evaluation = toEvaluationSummary(metrics);
+    const steps = Array.isArray(init.steps) ? [...init.steps] : [];
+    steps.push({
+      id: "evaluation-failed",
+      phase: "done",
+      label: "任务评估（失败路径）",
+      status: "failed",
+      at: nowIso(),
+      toolSummary: `err=${msg}; toolCalls=${evaluation.toolCalls}; retries=${evaluation.retries}; degraded=${evaluation.degraded ? "yes" : "no"}; needHuman=${evaluation.needHumanIntervention ? "yes" : "no"}; durationMs=${evaluation.durationMs}`,
+    });
+    await flushSteps(params.jobId, steps);
+    await prisma.learningJob.updateMany({
+      where: { id: params.jobId },
+      data: { status: "FAILED", finishedAt: new Date(), lastError: msg, steps: steps as unknown as Prisma.InputJsonValue },
+    });
+  }
 }
 
