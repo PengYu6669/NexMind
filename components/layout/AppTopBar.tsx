@@ -15,6 +15,7 @@ function pageTitleFromPath(pathname: string): string {
   if (pathname.startsWith("/notes")) return "知识库";
   if (pathname.startsWith("/graph")) return "知识图谱";
   if (pathname.startsWith("/nextclaw") || pathname.startsWith("/companion")) return "NextClaw";
+  if (pathname.startsWith("/learn")) return "学习中心";
   if (pathname.startsWith("/settings")) return "设置";
   if (pathname.startsWith("/help")) return "帮助";
   if (pathname.startsWith("/docs")) return "文档";

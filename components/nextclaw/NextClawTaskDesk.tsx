@@ -499,8 +499,8 @@ export function NextClawTaskDesk({
                     <div className="space-y-1.5 border-t border-outline-variant/5 bg-surface-container-low/20 px-2 py-1.5">
                       {ui?.steps?.length ? (
                         <ol className="list-decimal space-y-1 pl-4 text-[10px] leading-relaxed text-on-surface-variant">
-                          {ui.steps.map((s) => (
-                            <li key={s.id}>
+                          {ui.steps.map((s, idx) => (
+                            <li key={`${s.id}-${idx}`}>
                               <span className="font-semibold text-on-surface/90">{s.label}</span>
                               <span className="ml-1 rounded bg-surface-container-highest/40 px-1 text-[9px] text-outline">
                                 {s.status}

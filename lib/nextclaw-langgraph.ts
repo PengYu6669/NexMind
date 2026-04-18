@@ -19,6 +19,7 @@ import {
 } from "@/lib/nextclaw-workflow-policy";
 import { RAG_TOPK_DEEP, RAG_TOPK_LITE } from "@/lib/nextclaw-agent-config";
 import type { PlanToolName } from "@/lib/nextclaw-agent-types";
+import { runNextClawSkill } from "@/lib/nextclaw-skills";
 
 type JobType = "NOTE_LEARN_LITE" | "NOTE_LEARN_DEEP";
 
@@ -66,12 +67,24 @@ function pickDefaultUrlFromText(noteText: string): string | null {
 }
 
 function stepStatus(steps: LearningJobStepRecord[] | undefined, id: string): LearningJobStepRecord["status"] | null {
-  const s = Array.isArray(steps) ? steps.find((x) => x.id === id) : undefined;
+  const s = Array.isArray(steps) ? [...steps].reverse().find((x) => x.id === id) : undefined;
   return s?.status ?? null;
 }
 
 function isDone(steps: LearningJobStepRecord[] | undefined, id: string): boolean {
   return stepStatus(steps, id) === "done";
+}
+
+function uniqStepsKeepLatest(steps: LearningJobStepRecord[]): LearningJobStepRecord[] {
+  const out: LearningJobStepRecord[] = [];
+  const seen = new Set<string>();
+  for (let i = steps.length - 1; i >= 0; i -= 1) {
+    const s = steps[i]!;
+    if (seen.has(s.id)) continue;
+    seen.add(s.id);
+    out.unshift(s);
+  }
+  return out;
 }
 
 function nowIso() {
@@ -139,7 +152,8 @@ async function callToolWithPolicy(params: {
 }
 
 function pushStep(state: NextClawLangGraphState, step: LearningJobStepRecord): NextClawLangGraphState {
-  const steps = Array.isArray(state.steps) ? [...state.steps, step] : [step];
+  const merged = Array.isArray(state.steps) ? [...state.steps, step] : [step];
+  const steps = uniqStepsKeepLatest(merged);
   return { ...state, steps };
 }
 
@@ -437,7 +451,16 @@ function buildNextClawGraph() {
       if (state.hitlOverrideUrl) {
         const trace = Array.isArray(next.toolTraceLines) ? next.toolTraceLines : [];
         trace.push(`[hitl] overrideUrl=${state.hitlOverrideUrl}`);
-        next = updateLastStep(next, { status: "done", toolSummary: `人工指定来源：${state.hitlOverrideUrl}` });
+        const trust = runNextClawSkill("source_trust", {
+          url: state.hitlOverrideUrl,
+          title: "人工指定来源",
+          snippet: "",
+          markdown: "",
+        });
+        next = updateLastStep(next, {
+          status: "done",
+          toolSummary: `人工指定来源：${state.hitlOverrideUrl}；trust=${trust.level}/${trust.score}`,
+        });
         await flushSteps(next.jobId, next.steps!);
         return {
           ...next,
@@ -452,11 +475,22 @@ function buildNextClawGraph() {
       const query = state.autoWebSearchResults?.query ?? state.autoDecision?.query ?? "";
       const results = state.autoWebSearchResults?.results ?? [];
       const pick = await pickBestFromWebResults({ query, results });
+      const picked = results.find((x) => (x.url ?? "").trim() === (pick.selectedUrl ?? "").trim());
+      const trust = runNextClawSkill("source_trust", {
+        url: pick.selectedUrl,
+        title: picked?.title ?? pick.selectedTitle ?? "",
+        snippet: picked?.description ?? "",
+        markdown: "",
+      });
 
       const trace = Array.isArray(next.toolTraceLines) ? next.toolTraceLines : [];
       trace.push(`[filter] ${pick.announce}`);
+      trace.push(`[source_trust] level=${trust.level}; score=${trust.score}`);
 
-      next = updateLastStep(next, { status: "done", toolSummary: pick.announce });
+      next = updateLastStep(next, {
+        status: "done",
+        toolSummary: `${pick.announce}；trust=${trust.level}/${trust.score}`,
+      });
       await flushSteps(next.jobId, next.steps!);
       return { ...next, toolTraceLines: trace, autoPick: { announce: pick.announce, selectedUrl: pick.selectedUrl, selectedTitle: pick.selectedTitle } };
     })
@@ -543,11 +577,27 @@ function buildNextClawGraph() {
       const trace = Array.isArray(next.toolTraceLines) ? next.toolTraceLines : [];
       trace.push(`[audit_content] ${r.summary}`);
 
+      const localAudit = runNextClawSkill("conflict_audit", {
+        noteText: state.noteText ?? "",
+        fetchedMarkdown: state.autoFetched?.markdown ?? "",
+        relatedNotes: (state.relatedNotes ?? []).map((n) => ({
+          noteId: n.noteId,
+          title: n.title,
+          snippet: n.snippet ?? "",
+        })),
+      });
+      trace.push(
+        `[conflict_audit] conflicts=${localAudit.conflicts.length}; fillGaps=${localAudit.fillGaps.length}; evidence=${localAudit.evidence.length}`,
+      );
+
       const d = (r.data ?? null) as { conflicts?: string[]; fillGaps?: string[]; suggestedNoteIds?: string[] } | null;
+      const mergedConflicts = Array.from(new Set([...(d?.conflicts ?? []), ...localAudit.conflicts])).slice(0, 8);
+      const mergedFillGaps = Array.from(new Set([...(d?.fillGaps ?? []), ...localAudit.fillGaps])).slice(0, 8);
+      const mergedSuggested = Array.isArray(d?.suggestedNoteIds) ? d!.suggestedNoteIds : [];
       const auditSummary = auditorAgent.summarizeAuditCounts({
-        conflicts: Array.isArray(d?.conflicts) ? d!.conflicts : [],
-        fillGaps: Array.isArray(d?.fillGaps) ? d!.fillGaps : [],
-        suggestedNoteIds: Array.isArray(d?.suggestedNoteIds) ? d!.suggestedNoteIds : [],
+        conflicts: mergedConflicts,
+        fillGaps: mergedFillGaps,
+        suggestedNoteIds: mergedSuggested,
       });
 
       next = updateLastStep(next, {
@@ -558,7 +608,17 @@ function buildNextClawGraph() {
       });
       await flushSteps(next.jobId, next.steps!);
 
-      return { ...next, metrics, roleStats, toolTraceLines: trace, autoAudit: d ?? undefined };
+      return {
+        ...next,
+        metrics,
+        roleStats,
+        toolTraceLines: trace,
+        autoAudit: {
+          conflicts: mergedConflicts,
+          fillGaps: mergedFillGaps,
+          suggestedNoteIds: mergedSuggested,
+        },
+      };
     })
     // NOTE: LangGraph 不允许 node name 与 state channel 同名；
     // state 里有 `plan`，因此节点名必须避开（例如 planner_node）。
@@ -818,10 +878,40 @@ function buildNextClawGraph() {
       mode: state.jobType === "NOTE_LEARN_DEEP" ? "deep" : "lite",
     });
 
-    next = updateLastStep(next, { status: "done", toolSummary: `cards=${lite.cards.length}` });
+    const cards = Array.isArray(lite.cards) ? [...lite.cards] : [];
+    let reviewEnhanced = 0;
+    let antiCopyPassed = 0;
+    for (let i = 0; i < cards.length; i += 1) {
+      const c = cards[i] as { type?: string; title?: string; contentMd?: string } | undefined;
+      if (!c || c.type !== "REVIEW") continue;
+      const rq = runNextClawSkill("review_question", {
+        cardTitle: c.title ?? "",
+        noteText: state.noteText ?? "",
+        keyPoints: [],
+      });
+      reviewEnhanced += 1;
+      if (rq.antiCopyCheck.passed) antiCopyPassed += 1;
+      const addon = [
+        "## 自测问题",
+        `- ${rq.question}`,
+        "## 参考答案要点",
+        ...rq.answerKeyPoints.map((x) => `- ${x.replace(/^\d+\.\s*/, "")}`),
+      ].join("\n");
+      const hasReviewSection = /自测问题|参考答案要点/.test(c.contentMd ?? "");
+      cards[i] = {
+        ...c,
+        contentMd: hasReviewSection ? (c.contentMd ?? "") : `${c.contentMd ?? ""}\n\n${addon}`.trim(),
+      };
+    }
+
+    const liteWithReview = { ...lite, cards };
+    next = updateLastStep(next, {
+      status: "done",
+      toolSummary: `cards=${cards.length}; reviewEnhanced=${reviewEnhanced}; antiCopyPass=${antiCopyPassed}/${reviewEnhanced || 0}`,
+    });
     await flushSteps(next.jobId, next.steps!);
 
-    return { ...next, roleStats, toolTraceLines, coachResult: lite, metrics: state.metrics ?? next.metrics };
+    return { ...next, roleStats, toolTraceLines, coachResult: liteWithReview, metrics: state.metrics ?? next.metrics };
   })
     .addNode("persist", async (state: NextClawLangGraphState & { coachResult?: any }) => {
     await ensureNotInterrupted(state.jobId);
@@ -850,7 +940,7 @@ function buildNextClawGraph() {
     if (!note) throw new Error("笔记不存在");
 
     const lite = state.coachResult;
-    const cards = Array.isArray(lite?.cards) ? lite.cards : [];
+    const cards = Array.isArray(lite?.cards) ? [...lite.cards] : [];
 
     // 如果 autonomous audit 有结果，插入一张审计卡（让用户明确看到 agent 的“对账过程”）
     const audit = state.autoAudit;
@@ -892,6 +982,29 @@ function buildNextClawGraph() {
       });
     }
 
+    let guardPassed = 0;
+    let guardFailed = 0;
+    for (let i = 0; i < cards.length; i += 1) {
+      const c = cards[i] as { type?: string; title?: string; contentMd?: string } | undefined;
+      if (!c) continue;
+      const g = runNextClawSkill("card_quality_guard", {
+        type: (c.type as any) ?? "FILL_GAP",
+        title: c.title ?? "",
+        contentMd: c.contentMd ?? "",
+      });
+      if (g.passed) {
+        guardPassed += 1;
+      } else {
+        guardFailed += 1;
+        if (g.suggestions.length) {
+          cards[i] = {
+            ...c,
+            contentMd: `${c.contentMd ?? ""}\n\n## 质量改进建议\n${g.suggestions.map((x) => `- ${x}`).join("\n")}`.trim(),
+          };
+        }
+      }
+    }
+
     await prisma.learningCard.deleteMany({
       where: { userId: state.userId, noteId: job.noteId, noteUpdatedAt: job.noteUpdatedAt ?? undefined },
     });
@@ -919,7 +1032,10 @@ function buildNextClawGraph() {
       update: { dueDate },
     });
 
-    next = updateLastStep(next, { status: "done", toolSummary: `cards=${cards.length}` });
+    next = updateLastStep(
+      next,
+      { status: "done", toolSummary: `cards=${cards.length}; qualityPass=${guardPassed}; qualityFail=${guardFailed}` },
+    );
     await flushSteps(next.jobId, next.steps!);
 
     return { ...next, roleStats, metrics: state.metrics ?? next.metrics, toolTraceLines: state.toolTraceLines ?? next.toolTraceLines };

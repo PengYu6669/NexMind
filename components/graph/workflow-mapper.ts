@@ -23,20 +23,41 @@ function mapByNodeKind(kind: "note" | "card" | "job" | undefined): {
   return { layer: "input", variant: "noteNode" };
 }
 
-function reasoningFromNode(title: string, excerpt?: string | null): string[] {
+function reasoningFromKind(
+  kind: "note" | "card" | "job" | undefined,
+  title: string,
+  excerpt?: string | null,
+): string[] {
   const base = excerpt?.trim() || "";
+  if (kind === "card") {
+    return [
+      `学习卡片：${title}`,
+      base ? `关键信息：${base.slice(0, 100)}${base.length > 100 ? "..." : ""}` : "卡片内容摘要为空",
+      "建议关注：可执行步骤 / 易错点 / 自测问题",
+    ];
+  }
+  if (kind === "job") {
+    return [
+      `任务记录：${title}`,
+      "该节点主要用于回溯执行产物，不代表实时工作流状态。",
+      base ? `摘要：${base.slice(0, 100)}${base.length > 100 ? "..." : ""}` : "无摘要",
+    ];
+  }
   return [
-    `接收输入：${title}`,
-    "执行一致性检查与语义对齐",
-    base ? `关键线索：${base.slice(0, 88)}${base.length > 88 ? "..." : ""}` : "关键线索：暂无摘要，使用标题与关联边推断",
-    "输出候选：补位/冲突/复习建议",
+    `知识源笔记：${title}`,
+    base ? `摘要线索：${base.slice(0, 100)}${base.length > 100 ? "..." : ""}` : "暂无摘要线索",
+    "可用于关联冲突、补位与复习任务。",
   ];
 }
 
-export function mapGraphToWorkflow(payload: GraphPayload): {
+export function mapGraphToWorkflow(
+  payload: GraphPayload,
+  opts?: { includeJobs?: boolean },
+): {
   nodes: Node<WorkflowNodeData>[];
   edges: Edge[];
 } {
+  const includeJobs = opts?.includeJobs ?? false;
   const MAX_PER_LAYER = 14;
   const LANE_X: Record<WorkflowLayer, number> = { input: 120, agent: 620, output: 1120 };
   const COL_GAP = 300;
@@ -44,6 +65,7 @@ export function mapGraphToWorkflow(payload: GraphPayload): {
   const layerBuckets: Record<WorkflowLayer, GraphPayload["nodes"]> = { input: [], agent: [], output: [] };
 
   for (const n of payload.nodes) {
+    if (!includeJobs && n.nodeKind === "job") continue;
     const { layer } = mapByNodeKind(n.nodeKind);
     layerBuckets[layer].push(n);
   }
@@ -80,7 +102,7 @@ export function mapGraphToWorkflow(payload: GraphPayload): {
           reasoningLog:
             Array.isArray(n.reasoningLog) && n.reasoningLog.length
               ? n.reasoningLog
-              : reasoningFromNode(n.title || "无标题", n.excerpt),
+              : reasoningFromKind(n.nodeKind, n.title || "无标题", n.excerpt),
         },
       });
     });
@@ -104,15 +126,17 @@ export function mapGraphToWorkflow(payload: GraphPayload): {
     }
   });
 
-  const edges: Edge[] = payload.edges.map((e, i) => ({
-    id: `e-${i}-${e.source}-${e.target}`,
-    source: e.source,
-    target: e.target,
-    type: "animatedAuditEdge",
-    animated: true,
-    markerEnd: "url(#rf__arrowclosed)",
-    data: { active: i % 3 === 0 },
-  })).filter((e) => visibleIds.has(String(e.source)) && visibleIds.has(String(e.target)));
+  const edges: Edge[] = payload.edges
+    .map((e, i) => ({
+      id: `e-${i}-${e.source}-${e.target}`,
+      source: e.source,
+      target: e.target,
+      type: "animatedAuditEdge",
+      animated: e.kind === "CONFLICT_HINT" || e.kind === "DERIVED_FROM",
+      markerEnd: "url(#rf__arrowclosed)",
+      data: { active: e.kind === "CONFLICT_HINT", kind: e.kind },
+    }))
+    .filter((e) => visibleIds.has(String(e.source)) && visibleIds.has(String(e.target)));
 
   return { nodes, edges };
 }

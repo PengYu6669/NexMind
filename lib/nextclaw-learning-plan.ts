@@ -3,12 +3,9 @@ import { MAX_PLAN_STEPS } from "@/lib/nextclaw-agent-config";
 import type { LearningJobType } from "@prisma/client";
 import type { LearningPlanJson, LearningPlanStepDraft, PlanToolName } from "@/lib/nextclaw-agent-types";
 
+/** Retriever 节点已做过 RAG 与笔记加载，Fallback 只进入合成，避免重复工具与耗时 */
 const FALLBACK_PLAN: LearningPlanJson = {
-  steps: [
-    { id: "s1", title: "检索知识库并汇总相关笔记片段", tool: "search_notes" },
-    { id: "s2", title: "精读当前笔记正文", tool: "read_note" },
-    { id: "s3", title: "生成冲突/补位/复习等学习卡片", tool: "synthesize" },
-  ],
+  steps: [{ id: "s1", title: "基于已有上下文生成学习卡片与复习要点", tool: "synthesize" }],
 };
 
 function normalizeTool(v: unknown): PlanToolName | null {
@@ -72,8 +69,11 @@ export async function generateLearningPlan(params: {
   const deep = params.jobType === "NOTE_LEARN_DEEP";
   const system =
     "你是 NextClaw 学习任务规划器。根据用户笔记与相关摘要，输出**仅 JSON**（不要 Markdown、不要解释）。\n" +
+    "重要：同一任务里 **Retriever 节点已经完成** 相关笔记检索与当前笔记加载；除非确实需要「换关键词再搜」「精读另一篇笔记 id」或「外链抓取/审计」，否则不要重复安排 search_notes / read_note，优先用 noop 推理或直接进入 synthesize，以减少冗余耗时。\n" +
     "字段：steps 为数组；每项含 id（短字符串）、title（中文短句，说明该步做什么）、tool（可为 null 或以下之一：search_notes | read_note | web_search | fetch_url | audit_content | synthesize | noop）、toolInput（可选对象，用于工具参数）。\n" +
-    "约束：steps 数量 3～8；必须包含至少一步 synthesize 用于最终生成学习卡片；search_notes 表示依赖检索结果，read_note 表示需要精读正文，noop 表示纯推理不写工具。\n" +
+    "约束：" +
+    (deep ? "steps 数量 4～8" : "steps 数量 2～5（能少则少，仍以质量为先）") +
+    "；必须包含至少一步 synthesize 用于最终生成学习卡片；search_notes 表示依赖检索结果，read_note 表示需要精读正文，noop 表示纯推理不写工具。\n" +
     "工具说明：web_search=联网搜索并返回候选链接；fetch_url=抓取网页并转为 Markdown；audit_content=把抓取内容与相关笔记做审计对比，产出冲突/补位/关联建议。\n" +
     "toolInput 约定（尽量填写）：\n" +
     "- web_search: { query: string, topK?: number }\n" +

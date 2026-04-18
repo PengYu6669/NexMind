@@ -14,9 +14,10 @@ export async function PATCH(
 
   const { id } = await context.params;
 
-  const body = (await req.json()) as { title?: string; content?: string };
+  const body = (await req.json()) as { title?: string; content?: string; triggerLearning?: boolean };
   const title = body.title?.trim();
   const content = body.content;
+  const triggerLearning = body.triggerLearning === true;
 
   if (typeof title !== "string" && typeof content !== "string") {
     return NextResponse.json({ error: "缺少 title 或 content" }, { status: 400 });
@@ -64,8 +65,10 @@ export async function PATCH(
     // ignore
   }
 
-  // 轻量自动学习：入队（防抖 30 秒），失败不影响保存主流程
-  if (typeof content === "string") {
+  // 学习任务改为“显式触发”：
+  // 自动保存会非常频繁，若每次都入队会造成大量 token 消耗。
+  // 仅当前端明确传 triggerLearning=true 时才创建学习任务。
+  if (typeof content === "string" && triggerLearning) {
     try {
       const latest = await prisma.note.findFirst({
         where: { id, userId: user.id },

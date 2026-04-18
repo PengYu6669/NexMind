@@ -10,6 +10,7 @@ const navItems = [
   { href: "/notes", label: "知识库", icon: "database" as const },
   { href: "/graph", label: "知识图谱", icon: "hub" as const },
   { href: "/nextclaw", label: "NextClaw", icon: "assistant" as const },
+  { href: "/learn", label: "学习中心", icon: "school" as const },
   { href: "/settings", label: "设置", icon: "settings" as const },
 ];
 

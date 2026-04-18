@@ -41,9 +41,17 @@ export async function GET() {
   ]);
 
   const degree = new Map<string, number>();
-  const edgeList: Array<{ source: string; target: string }> = [];
-  const pushEdge = (source: string, target: string) => {
-    edgeList.push({ source, target });
+  const edgeList: Array<{
+    source: string;
+    target: string;
+    kind: "LINK" | "DERIVED_FROM" | "PRODUCES" | "CONFLICT_HINT";
+  }> = [];
+  const pushEdge = (
+    source: string,
+    target: string,
+    kind: "LINK" | "DERIVED_FROM" | "PRODUCES" | "CONFLICT_HINT",
+  ) => {
+    edgeList.push({ source, target, kind });
     degree.set(source, (degree.get(source) ?? 0) + 1);
     degree.set(target, (degree.get(target) ?? 0) + 1);
   };
@@ -53,16 +61,19 @@ export async function GET() {
   for (const j of jobs) degree.set(`job:${j.id}`, 0);
 
   for (const e of links) {
-    pushEdge(`note:${e.fromNoteId}`, `note:${e.toNoteId}`);
+    pushEdge(`note:${e.fromNoteId}`, `note:${e.toNoteId}`, "LINK");
   }
   for (const c of cards) {
-    pushEdge(`note:${c.noteId}`, `card:${c.id}`);
+    pushEdge(`note:${c.noteId}`, `card:${c.id}`, "DERIVED_FROM");
+    if (c.type === "CONFLICT") {
+      pushEdge(`card:${c.id}`, `note:${c.noteId}`, "CONFLICT_HINT");
+    }
   }
   for (const j of jobs) {
     if (!j.noteId) continue;
     const latestCard = cards.find((c) => c.noteId === j.noteId);
-    if (latestCard) pushEdge(`card:${latestCard.id}`, `job:${j.id}`);
-    else pushEdge(`note:${j.noteId}`, `job:${j.id}`);
+    if (latestCard) pushEdge(`card:${latestCard.id}`, `job:${j.id}`, "PRODUCES");
+    else pushEdge(`note:${j.noteId}`, `job:${j.id}`, "PRODUCES");
   }
 
   return NextResponse.json({
@@ -75,8 +86,8 @@ export async function GET() {
         excerpt: n.excerpt,
         updatedAt: n.updatedAt.toISOString(),
         reasoningLog: [
-          `输入来源：用户笔记《${n.title || "无标题"}》`,
-          "已进入审计队列，等待 Agent 分析关联与冲突。",
+          `知识源：${n.title || "无标题"}`,
+          "与其关联的学习卡片可用于补位、冲突识别与复习。",
         ],
       })),
       ...cards.map((c) => ({
@@ -87,9 +98,9 @@ export async function GET() {
         excerpt: c.contentMd.slice(0, 220),
         updatedAt: c.createdAt.toISOString(),
         reasoningLog: [
-          `Agent 产出学习卡片（${c.type}）。`,
-          `标题：${c.title}`,
-          c.contentMd.slice(0, 120) || "内容为空。",
+          `卡片类型：${c.type}`,
+          `来源笔记：${c.noteId}`,
+          c.contentMd.slice(0, 120) || "内容为空",
         ],
       })),
       ...jobs.map((j) => ({
@@ -97,11 +108,11 @@ export async function GET() {
         nodeKind: "job" as const,
         title: `任务输出：${j.type}`,
         degree: degree.get(`job:${j.id}`) ?? 0,
-        excerpt: j.status === "SUCCEEDED" ? "任务执行成功，输出已写入知识库/卡片。" : "任务未成功。",
+        excerpt: j.status === "SUCCEEDED" ? "执行记录：用于回溯，不代表实时状态。" : "任务未成功。",
         updatedAt: (j.finishedAt ?? j.updatedAt).toISOString(),
         reasoningLog: Array.isArray(j.steps)
-          ? (j.steps as Array<{ label?: unknown; status?: unknown }>).slice(-6).map((s) => `${String(s.label ?? "step")} [${String(s.status ?? "")}]`)
-          : ["任务完成，等待下游消费。"],
+          ? (j.steps as Array<{ label?: unknown; status?: unknown }>).slice(-4).map((s) => `${String(s.label ?? "step")} [${String(s.status ?? "")}]`)
+          : ["执行记录为空"],
       })),
     ],
     edges: edgeList,

@@ -80,6 +80,7 @@ export async function decideNeedWebSearch(params: {
     "你是 NextClaw 的自主学习决策器。你要判断：当前知识库信息是否足以完成学习任务，若不足则给出一个高质量搜索 query。\n" +
     "只输出 JSON（不要 Markdown，不要解释）。输出格式：{ needSearch: boolean, query?: string, reason?: string }。\n" +
     "约束：\n" +
+    "- **默认倾向 needSearch=false**：仅当知识库明显缺权威定义、缺可核对事实、或主题强依赖实时/外链文档时才置为 true。\n" +
     "- needSearch=true 时必须提供 query（中文优先，包含：官网、GitHub、文档、教程等关键词）。\n" +
     "- 如果调用环境偏向中国站点可访问性，请优先选择中文来源或在 query 中加入 site:.cn（不要把 sitemap 当作目标）。\n" +
     "- reason 给用户看，最多 1 句话。\n";

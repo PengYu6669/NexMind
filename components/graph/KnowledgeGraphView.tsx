@@ -28,7 +28,7 @@ export type GraphNodePayload = {
 
 export type GraphPayload = {
   nodes: GraphNodePayload[];
-  edges: { source: string; target: string }[];
+  edges: { source: string; target: string; kind?: "LINK" | "DERIVED_FROM" | "PRODUCES" | "CONFLICT_HINT" }[];
 };
 
 export function KnowledgeGraphView() {
@@ -40,6 +40,7 @@ export function KnowledgeGraphView() {
   const [selectedNodeData, setSelectedNodeData] = useState<WorkflowNodeData | null>(null);
   const [nodes, setNodes, onNodesChange] = useNodesState<WorkflowNodeData>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+  const [includeJobs, setIncludeJobs] = useState(false);
 
   const fetchGraph = useCallback(async () => {
     setLoading(true);
@@ -70,7 +71,10 @@ export function KnowledgeGraphView() {
     };
   }, [fetchGraph, refreshTick]);
 
-  const workflow = useMemo(() => (data ? mapGraphToWorkflow(data) : { nodes: [], edges: [] }), [data]);
+  const workflow = useMemo(
+    () => (data ? mapGraphToWorkflow(data, { includeJobs }) : { nodes: [], edges: [] }),
+    [data, includeJobs],
+  );
   useEffect(() => setNodes(workflow.nodes), [workflow.nodes, setNodes]);
   useEffect(() => setEdges(workflow.edges), [workflow.edges, setEdges]);
 
@@ -89,6 +93,18 @@ export function KnowledgeGraphView() {
           </p>
         </div>
         <div className="flex shrink-0 flex-col items-end gap-2 sm:flex-row sm:items-center">
+          <button
+            type="button"
+            className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-[11px] font-semibold transition-colors ${
+              includeJobs
+                ? "border-primary/35 bg-primary/10 text-primary"
+                : "border-outline-variant/15 bg-surface-container-highest/50 text-on-surface/90 hover:border-primary/30"
+            }`}
+            onClick={() => setIncludeJobs((v) => !v)}
+          >
+            <MaterialIcon name="route" className="text-sm opacity-80" />
+            {includeJobs ? "隐藏执行记录" : "显示执行记录"}
+          </button>
           {data ? (
             <span className="rounded-full border border-outline-variant/10 bg-surface-container-highest/50 px-3 py-1.5 text-[11px] font-medium tabular-nums text-on-surface-variant/80">
               {data.nodes.length} 节点 · {data.edges.length} 条边

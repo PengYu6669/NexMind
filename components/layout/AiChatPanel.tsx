@@ -170,14 +170,14 @@ export function AiChatPanel({
     const r = (reasoning || "").trim();
     const a = (answer || "").trim();
     if (r && a) {
-      return `> 思考过程（流式）\n>\n${r
+      return `> 思考过程\n>\n${r
         .split("\n")
         .map((line) => `> ${line}`)
         .join("\n")}\n\n${a}`;
     }
     if (a) return a;
     if (r) {
-      return `> 思考过程（流式）\n>\n${r
+      return `> 思考过程\n>\n${r
         .split("\n")
         .map((line) => `> ${line}`)
         .join("\n")}`;
