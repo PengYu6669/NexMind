@@ -41,13 +41,46 @@ export async function GET(req: Request) {
         note: { select: { title: true } },
       },
     });
-    activeJobs = jobRows.map((j) => ({
+    const uiByJob = jobRows.map((j) => ({
       id: j.id,
       status: j.status,
       type: j.type,
       noteTitle: j.note?.title ?? "（无标题）",
       ui: buildTaskUiPayload({ status: j.status, steps: j.steps }),
     }));
+    const noteIds = Array.from(
+      new Set(
+        uiByJob.flatMap((j) =>
+          (j.ui.steps ?? [])
+            .map((s) => (s.toolSummary ?? "").match(/noteId=([a-z0-9]+)/i)?.[1] ?? "")
+            .filter(Boolean),
+        ),
+      ),
+    );
+    const titleMap = new Map<string, string>();
+    if (noteIds.length) {
+      const rows = await prisma.note.findMany({
+        where: { userId: user.id, id: { in: noteIds } },
+        select: { id: true, title: true },
+      });
+      for (const r of rows) titleMap.set(r.id, r.title || "（无标题）");
+    }
+    activeJobs = uiByJob.map((j) => {
+      const generatedNotes = (j.ui.steps ?? [])
+        .map((s) => {
+          const id = (s.toolSummary ?? "").match(/noteId=([a-z0-9]+)/i)?.[1];
+          if (!id) return null;
+          return { id, title: titleMap.get(id) ?? "（新笔记）" };
+        })
+        .filter((x): x is { id: string; title: string } => Boolean(x));
+      return {
+        ...j,
+        ui: {
+          ...j.ui,
+          generatedNotes,
+        },
+      };
+    });
   } catch (e) {
     console.warn("[nextclaw/feed] activeJobs query failed (schema migration?)", e);
   }
@@ -117,4 +150,33 @@ export async function GET(req: Request) {
     activeJobs,
     generatedAt: new Date().toISOString(),
   });
+}
+
+/**
+ * 删除学习卡片
+ * - 单删：{ cardId: string }
+ * - 全删：{ all: true }
+ */
+export async function DELETE(req: Request) {
+  const user = await getAuthUser();
+  if (!user) return NextResponse.json({ error: "未登录" }, { status: 401 });
+
+  const body = (await req.json().catch(() => null)) as { cardId?: string; all?: boolean } | null;
+  const cardId = typeof body?.cardId === "string" ? body.cardId.trim() : "";
+  const all = body?.all === true;
+
+  if (!all && !cardId) {
+    return NextResponse.json({ error: "缺少 cardId 或 all=true" }, { status: 400 });
+  }
+
+  if (all) {
+    const r = await prisma.learningCard.deleteMany({ where: { userId: user.id } });
+    return NextResponse.json({ ok: true, deleted: r.count });
+  }
+
+  const r = await prisma.learningCard.deleteMany({ where: { id: cardId, userId: user.id } });
+  if (r.count === 0) {
+    return NextResponse.json({ error: "卡片不存在" }, { status: 404 });
+  }
+  return NextResponse.json({ ok: true, deleted: r.count });
 }

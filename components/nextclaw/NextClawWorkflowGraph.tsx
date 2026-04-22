@@ -96,17 +96,17 @@ export function NextClawWorkflowGraph({ steps }: { steps: StepLike[] }) {
     // 竖向紧凑布局：单列主链路 + 右侧一列 Autonomous（可选）
     const n: Node[] = [
       { id: "retrieve", position: { x: 0, y: 0 }, type: "card", data: { title: "Retriever · RAG", status: stRetrieve, summary: pickSummary(s, "retrieve") } },
-      { id: "auto-reason", position: { x: 0, y: 120 }, type: "card", data: { title: "Reason · 是否需要联网", status: stReason, summary: pickSummary(s, "auto-reason") } },
-      { id: "plan", position: { x: 0, y: 240 }, type: "card", data: { title: "Planner · 计划", status: stPlan, summary: pickSummary(s, "plan") } },
-      { id: "plan-exec", position: { x: 0, y: 360 }, type: "card", data: { title: "Execute · 执行计划", status: stExec, summary: pickSummary(s, "plan-exec") } },
-      { id: "coach", position: { x: 0, y: 480 }, type: "card", data: { title: "Coach · 生成卡片", status: stCoach, summary: pickSummary(s, "coach") } },
-      { id: "persist", position: { x: 0, y: 600 }, type: "card", data: { title: "Persist · 写入", status: stPersist, summary: pickSummary(s, "persist") } },
-      { id: "evaluation", position: { x: 0, y: 720 }, type: "card", data: { title: "Evaluate · 评估", status: stEval, summary: pickSummary(s, "evaluation") ?? pickSummary(s, "evaluation-failed") } },
+      { id: "auto-reason", position: { x: 0, y: 96 }, type: "card", data: { title: "Reason · 是否需要联网", status: stReason, summary: pickSummary(s, "auto-reason") } },
+      { id: "plan", position: { x: 0, y: 192 }, type: "card", data: { title: "Planner · 计划", status: stPlan, summary: pickSummary(s, "plan") } },
+      { id: "plan-exec", position: { x: 0, y: 288 }, type: "card", data: { title: "Execute · 执行计划", status: stExec, summary: pickSummary(s, "plan-exec") } },
+      { id: "coach", position: { x: 0, y: 384 }, type: "card", data: { title: "Coach · 生成卡片", status: stCoach, summary: pickSummary(s, "coach") } },
+      { id: "persist", position: { x: 0, y: 480 }, type: "card", data: { title: "Persist · 写入", status: stPersist, summary: pickSummary(s, "persist") } },
+      { id: "evaluation", position: { x: 0, y: 576 }, type: "card", data: { title: "Evaluate · 评估", status: stEval, summary: pickSummary(s, "evaluation") ?? pickSummary(s, "evaluation-failed") } },
 
-      { id: "auto-web-search", position: { x: 240, y: 120 }, type: "card", data: { title: "Tool · web_search", status: stSearch, summary: pickSummary(s, "auto-web-search") } },
-      { id: "auto-filter", position: { x: 240, y: 240 }, type: "card", data: { title: "Filter · 选源", status: stFilter, summary: pickSummary(s, "auto-filter") } },
-      { id: "auto-fetch", position: { x: 240, y: 360 }, type: "card", data: { title: "Tool · fetch_url", status: stFetch, summary: pickSummary(s, "auto-fetch") } },
-      { id: "auto-audit", position: { x: 240, y: 480 }, type: "card", data: { title: "Auditor · 审计", status: stAudit, summary: pickSummary(s, "auto-audit") } },
+      { id: "auto-web-search", position: { x: 250, y: 96 }, type: "card", data: { title: "Tool · web_search", status: stSearch, summary: pickSummary(s, "auto-web-search") } },
+      { id: "auto-filter", position: { x: 250, y: 192 }, type: "card", data: { title: "Filter · 选源", status: stFilter, summary: pickSummary(s, "auto-filter") } },
+      { id: "auto-fetch", position: { x: 250, y: 288 }, type: "card", data: { title: "Tool · fetch_url", status: stFetch, summary: pickSummary(s, "auto-fetch") } },
+      { id: "auto-audit", position: { x: 250, y: 384 }, type: "card", data: { title: "Auditor · 审计", status: stAudit, summary: pickSummary(s, "auto-audit") } },
     ];
 
     const e: Edge[] = [
@@ -128,19 +128,19 @@ export function NextClawWorkflowGraph({ steps }: { steps: StepLike[] }) {
   }, [steps]);
 
   return (
-    <div className="h-[300px] w-full overflow-hidden rounded-xl border border-outline-variant/12 bg-surface-container-lowest/20">
+    <div className="h-[380px] w-full overflow-hidden rounded-xl border border-outline-variant/12 bg-surface-container-lowest/20">
       <ReactFlow
         nodes={nodes}
         edges={edges}
         nodeTypes={{ card: NodeCard as any }}
         fitView
         // 初始稍微放大一点：减少 padding，让默认视图更“近”
-        fitViewOptions={{ padding: 0.08 }}
+        fitViewOptions={{ padding: 0.12 }}
         nodesDraggable={false}
         nodesConnectable={false}
         elementsSelectable={false}
         zoomOnScroll={false}
-        panOnScroll
+        panOnScroll={false}
         proOptions={{ hideAttribution: true }}
       >
         <Background gap={16} size={1} color="rgba(255,255,255,0.06)" />

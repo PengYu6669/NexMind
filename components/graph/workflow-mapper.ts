@@ -52,79 +52,73 @@ function reasoningFromKind(
 
 export function mapGraphToWorkflow(
   payload: GraphPayload,
-  opts?: { includeJobs?: boolean },
 ): {
   nodes: Node<WorkflowNodeData>[];
   edges: Edge[];
 } {
-  const includeJobs = opts?.includeJobs ?? false;
-  const MAX_PER_LAYER = 14;
-  const LANE_X: Record<WorkflowLayer, number> = { input: 120, agent: 620, output: 1120 };
-  const COL_GAP = 300;
-  const ROW_GAP = 140;
-  const layerBuckets: Record<WorkflowLayer, GraphPayload["nodes"]> = { input: [], agent: [], output: [] };
-
-  for (const n of payload.nodes) {
-    if (!includeJobs && n.nodeKind === "job") continue;
-    const { layer } = mapByNodeKind(n.nodeKind);
-    layerBuckets[layer].push(n);
-  }
-
+  const MAX_VISIBLE = 42;
+  const nodesSource = payload.nodes;
+  const sorted = [...nodesSource].sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
+  const visible = sorted.slice(0, MAX_VISIBLE);
+  const hiddenCount = Math.max(0, sorted.length - visible.length);
   const visibleIds = new Set<string>();
   const nodes: Node<WorkflowNodeData>[] = [];
 
-  (Object.keys(layerBuckets) as WorkflowLayer[]).forEach((layer) => {
-    const bucket = layerBuckets[layer];
-    bucket.sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
-    const visible = bucket.slice(0, MAX_PER_LAYER);
-    const hiddenCount = Math.max(0, bucket.length - visible.length);
+  function hash(s: string) {
+    let h = 2166136261;
+    for (let i = 0; i < s.length; i += 1) {
+      h ^= s.charCodeAt(i);
+      h += (h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24);
+    }
+    return Math.abs(h >>> 0);
+  }
 
-    visible.forEach((n, idx) => {
-      const { variant } = mapByNodeKind(n.nodeKind);
-      // 每层两列排布，减少纵向拉长
-      const laneCol = idx % 2;
-      const laneRow = Math.floor(idx / 2);
-      const x = LANE_X[layer] + laneCol * COL_GAP;
-      const y = 90 + laneRow * ROW_GAP + (laneCol === 1 ? 10 : 0);
-      visibleIds.add(n.id);
-      nodes.push({
-        id: n.id,
-        type: "workflowNode",
-        position: { x, y },
-        draggable: true,
-        data: {
-          title: n.title || "无标题",
-          subtitle: `${n.degree} 关联`,
-          excerpt: n.excerpt,
-          updatedAt: n.updatedAt,
-          layer,
-          variant,
-          reasoningLog:
-            Array.isArray(n.reasoningLog) && n.reasoningLog.length
-              ? n.reasoningLog
-              : reasoningFromKind(n.nodeKind, n.title || "无标题", n.excerpt),
-        },
-      });
+  visible.forEach((n, idx) => {
+    const { layer, variant } = mapByNodeKind(n.nodeKind);
+    const col = idx % 6;
+    const row = Math.floor(idx / 6);
+    const jitter = (hash(n.id) % 100) - 50;
+    const baseX = 120 + col * 260;
+    const baseY = 90 + row * 170;
+    const layerOffset = layer === "input" ? -70 : layer === "output" ? 70 : 0;
+    const x = baseX + layerOffset + jitter * 0.6;
+    const y = baseY + ((hash(`${n.id}-y`) % 80) - 40);
+    visibleIds.add(n.id);
+    nodes.push({
+      id: n.id,
+      type: "workflowNode",
+      position: { x, y },
+      draggable: true,
+      data: {
+        title: n.title || "无标题",
+        subtitle: `${n.degree} 关联`,
+        excerpt: n.excerpt,
+        updatedAt: n.updatedAt,
+        layer,
+        variant,
+        reasoningLog:
+          Array.isArray(n.reasoningLog) && n.reasoningLog.length
+            ? n.reasoningLog
+            : reasoningFromKind(n.nodeKind, n.title || "无标题", n.excerpt),
+      },
     });
+  });
 
-    if (hiddenCount > 0) {
-      const x = LANE_X[layer] + 110;
-      const y = 90 + Math.ceil(visible.length / 2) * ROW_GAP;
+  if (hiddenCount > 0) {
       nodes.push({
-        id: `collapsed:${layer}`,
+        id: "collapsed:graph",
         type: "workflowNode",
-        position: { x, y },
+        position: { x: 120, y: 60 + Math.ceil(visible.length / 6) * 170 },
         draggable: false,
         data: {
-          title: `还有 ${hiddenCount} 个${layer}节点`,
+          title: `还有 ${hiddenCount} 个节点`,
           subtitle: "已折叠，避免图谱过长",
-          layer,
-          variant: layer === "input" ? "searchNode" : layer === "agent" ? "toolNode" : "reviewNode",
+          layer: "agent",
+          variant: "toolNode",
           reasoningLog: ["节点数量过多，已自动折叠。", "可通过筛选/分页进一步查看。"],
         },
       });
-    }
-  });
+  }
 
   const edges: Edge[] = payload.edges
     .map((e, i) => ({

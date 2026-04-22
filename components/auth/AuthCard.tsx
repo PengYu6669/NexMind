@@ -283,7 +283,7 @@ export function AuthCard({ mode }: { mode: AuthMode }) {
           </Link>
         </div>
         <p className="font-mono text-[10px] tracking-tighter text-on-surface-variant/30">
-          © 2024 NexMind AI. KERNEL VERSION 1.0.4-BETA. ALL RIGHTS RESERVED.
+          © PengYu6669 · NexMind v1.0.4-beta
         </p>
       </footer>
 

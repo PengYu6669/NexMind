@@ -11,8 +11,10 @@ import {
   MessageSquarePlus,
   Pin,
   Sparkles,
+  Trash2,
 } from "lucide-react";
 import { NextClawWorkflowGraph } from "@/components/nextclaw/NextClawWorkflowGraph";
+import { AgentOpsPanel } from "@/components/nextclaw/AgentOpsPanel";
 
 type FeedCardType = "conflict" | "external_update" | "review";
 type FeedDbType = "REVIEW" | "FILL_GAP" | "PITFALL" | "CONFLICT" | "RELATED" | "EXTERNAL" | "AUDIT";
@@ -123,6 +125,7 @@ export type IntelligenceFeedAgentJob = {
     progress: number;
     currentStepLabel: string | null;
     steps: { id: string; label: string; status: string; toolSummary?: string }[];
+    generatedNotes?: { id: string; title: string }[];
   };
 };
 
@@ -131,7 +134,10 @@ export function IntelligenceFeed({
   loading,
   error,
   activeAgentJobs,
+  graphJobs,
+  pendingJobs,
   selectedAgentJobId,
+  onSelectAgentJob,
   onAsk,
   onAfterReviewScore,
 }: {
@@ -141,8 +147,12 @@ export function IntelligenceFeed({
   error?: string | null;
   /** 自治 Agent 进行中任务（来自 GET /api/nextclaw/feed.activeJobs） */
   activeAgentJobs?: IntelligenceFeedAgentJob[] | null;
+  /** 右侧迁移而来的图谱数据源（含 capture 任务） */
+  graphJobs?: IntelligenceFeedAgentJob[] | null;
+  pendingJobs?: number;
   /** 若指定，则优先展示该 job 的工作流 */
   selectedAgentJobId?: string | null;
+  onSelectAgentJob?: (jobId: string) => void;
   onAsk?: (payload: { cardId: string; noteId?: string; text: string }) => void;
   onAfterReviewScore?: () => void;
 }) {
@@ -201,7 +211,9 @@ export function IntelligenceFeed({
   }, [cards, demoCards, loading]);
 
   const isDemo = cards === undefined;
-  const [activeFilters, setActiveFilters] = useState<FeedDbType[]>([]);
+  const [activeFilter, setActiveFilter] = useState<FeedDbType | "__all__">("__all__");
+  const [localCards, setLocalCards] = useState<IntelligenceFeedCard[]>([]);
+  const [deleting, setDeleting] = useState<string | null>(null);
 
   const [askOpen, setAskOpen] = useState<Record<string, boolean>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
@@ -225,7 +237,7 @@ export function IntelligenceFeed({
     { key: "AUDIT", label: "审计" },
     { key: "REVIEW", label: "复习" },
     { key: "RELATED", label: "关联" },
-    { key: "FILL_GAP", label: "补位" },
+    { key: "FILL_GAP", label: "查漏补缺" },
     { key: "PITFALL", label: "踩坑" },
     { key: "CONFLICT", label: "冲突" },
     { key: "EXTERNAL", label: "外部" },
@@ -233,17 +245,17 @@ export function IntelligenceFeed({
 
   const filterCountMap = useMemo(() => {
     const m: Record<string, number> = {};
-    for (const c of data) {
+    for (const c of localCards) {
       const k = c.dbType ?? "EXTERNAL";
       m[k] = (m[k] ?? 0) + 1;
     }
     return m;
-  }, [data]);
+  }, [localCards]);
 
   const filteredData = useMemo(() => {
-    if (!activeFilters.length) return data;
-    return data.filter((c) => c.dbType && activeFilters.includes(c.dbType));
-  }, [activeFilters, data]);
+    if (activeFilter === "__all__") return localCards;
+    return localCards.filter((c) => c.dbType === activeFilter);
+  }, [activeFilter, localCards]);
 
   async function submitReviewAnswer(cardId: string, reviewItemId: string) {
     const answer = (answerByCardId[cardId] ?? "").trim();
@@ -284,6 +296,47 @@ export function IntelligenceFeed({
     }
   }
 
+  async function deleteCard(cardId: string) {
+    if (isDemo) return;
+    setDeleting(cardId);
+    try {
+      const r = await fetch("/api/nextclaw/feed", {
+        method: "DELETE",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cardId }),
+      });
+      const j = (await r.json().catch(() => null)) as { error?: string };
+      if (!r.ok) throw new Error(j?.error || "删除失败");
+      setLocalCards((prev) => prev.filter((x) => x.id !== cardId));
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "删除失败");
+    } finally {
+      setDeleting(null);
+    }
+  }
+
+  async function deleteAllCards() {
+    if (isDemo) return;
+    if (!window.confirm("确定清空全部学习卡片吗？此操作不可撤销。")) return;
+    setDeleting("__all__");
+    try {
+      const r = await fetch("/api/nextclaw/feed", {
+        method: "DELETE",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ all: true }),
+      });
+      const j = (await r.json().catch(() => null)) as { error?: string };
+      if (!r.ok) throw new Error(j?.error || "清空失败");
+      setLocalCards([]);
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "清空失败");
+    } finally {
+      setDeleting(null);
+    }
+  }
+
   const liveAgentJob = useMemo(() => {
     const jobs = Array.isArray(activeAgentJobs) ? activeAgentJobs : [];
     if (selectedAgentJobId) {
@@ -295,6 +348,10 @@ export function IntelligenceFeed({
   const [hitlUrl, setHitlUrl] = useState("");
   const [hitlBusy, setHitlBusy] = useState(false);
   const [hitlError, setHitlError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setLocalCards(data);
+  }, [data]);
 
   const needUrl = Boolean(liveAgentJob?.ui.steps?.some((s) => s.id === "hitl-need-url"));
 
@@ -338,27 +395,23 @@ export function IntelligenceFeed({
               <div className="mt-2 flex flex-wrap gap-1.5">
                 <button
                   type="button"
-                  onClick={() => setActiveFilters([])}
+                  onClick={() => setActiveFilter("__all__")}
                   className={`rounded-md border px-2 py-1 text-[11px] font-bold transition-colors ${
-                    activeFilters.length === 0
+                    activeFilter === "__all__"
                       ? "border-primary/35 bg-primary/15 text-primary"
                       : "border-outline-variant/20 bg-surface-container-low/40 text-on-surface-variant hover:bg-surface-container-low/60"
                   }`}
                 >
-                  全部（{data.length}）
+                  全部（{localCards.length}）
                 </button>
                 {filterDefs.map((f) => {
-                  const active = activeFilters.includes(f.key);
+                  const active = activeFilter === f.key;
                   const count = filterCountMap[f.key] ?? 0;
                   return (
                     <button
                       key={f.key}
                       type="button"
-                      onClick={() =>
-                        setActiveFilters((prev) =>
-                          prev.includes(f.key) ? prev.filter((x) => x !== f.key) : [...prev, f.key]
-                        )
-                      }
+                      onClick={() => setActiveFilter((prev) => (prev === f.key ? "__all__" : f.key))}
                       className={`rounded-md border px-2 py-1 text-[11px] font-bold transition-colors ${
                         active
                           ? "border-primary/35 bg-primary/15 text-primary"
@@ -369,6 +422,14 @@ export function IntelligenceFeed({
                     </button>
                   );
                 })}
+                <button
+                  type="button"
+                  onClick={() => void deleteAllCards()}
+                  disabled={deleting === "__all__" || localCards.length === 0}
+                  className="rounded-md border border-error/25 bg-error/10 px-2 py-1 text-[11px] font-bold text-error transition-colors hover:bg-error/15 disabled:opacity-40"
+                >
+                  {deleting === "__all__" ? "清空中…" : "全删"}
+                </button>
               </div>
             ) : null}
           </div>
@@ -385,9 +446,9 @@ export function IntelligenceFeed({
         </div>
       </div>
 
-      <div className="no-scrollbar min-h-0 flex-1 space-y-2.5 overflow-y-auto px-6 py-4">
+      <div className="no-scrollbar min-h-0 flex flex-1 flex-col gap-3 overflow-y-auto px-6 py-4">
         {liveAgentJob ? (
-          <div className="sticky top-0 z-10 rounded-2xl border border-primary/30 bg-primary/5 p-4 shadow-sm backdrop-blur-sm">
+          <div className="shrink-0 rounded-2xl border border-primary/30 bg-primary/5 p-4 shadow-sm backdrop-blur-sm">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
@@ -460,16 +521,28 @@ export function IntelligenceFeed({
           </div>
         ) : null}
 
+        <div className="shrink-0 rounded-2xl border border-outline-variant/12 bg-surface-container-low/20 p-2">
+          <div className="h-[62vh] min-h-[560px] overflow-hidden rounded-xl">
+            <AgentOpsPanel
+              loading={loading}
+              jobs={Array.isArray(graphJobs) ? graphJobs : []}
+              pendingJobs={typeof pendingJobs === "number" ? pendingJobs : 0}
+              selectedJobId={selectedAgentJobId}
+              onSelectJob={onSelectAgentJob}
+            />
+          </div>
+        </div>
+
         {loading || cards === null ? (
-          <div className="rounded-2xl border border-outline-variant/15 bg-surface-container-lowest/30 px-4 py-8 text-center text-sm text-on-surface-variant">
+          <div className="shrink-0 rounded-2xl border border-outline-variant/15 bg-surface-container-lowest/30 px-4 py-3 text-center text-xs text-on-surface-variant">
             正在加载智能流…
           </div>
         ) : null}
 
-        {!loading && Array.isArray(cards) && cards.length === 0 ? (
-          <div className="rounded-2xl border border-dashed border-outline-variant/25 bg-surface-container-lowest/20 px-4 py-8 text-center">
-            <p className="text-sm font-bold text-on-surface">暂无学习卡片</p>
-            <p className="mt-2 text-xs leading-relaxed text-on-surface-variant">
+        {!loading && localCards.length === 0 ? (
+          <div className="shrink-0 rounded-2xl border border-dashed border-outline-variant/25 bg-surface-container-lowest/20 px-4 py-3 text-center">
+            <p className="text-xs font-bold text-on-surface">暂无学习卡片</p>
+            <p className="mt-1 text-[11px] leading-relaxed text-on-surface-variant">
               在笔记中保存内容后，可通过「学习队列」触发{" "}
               <code className="rounded bg-surface-container-high px-1 text-[11px]">POST /api/notes/[id]/learning-enqueue</code>{" "}
               或定时任务 <code className="rounded bg-surface-container-high px-1 text-[11px]">POST /api/internal/learning/run-jobs</code>{" "}
@@ -478,7 +551,9 @@ export function IntelligenceFeed({
           </div>
         ) : null}
 
-        {filteredData.map((c) => {
+        {localCards.length > 0 ? (
+        <div className="no-scrollbar shrink-0 max-h-[18vh] space-y-2 overflow-y-auto">
+          {filteredData.map((c) => {
           const open = !!askOpen[c.id];
           const isExpanded = !!expanded[c.id];
           const hasDetails = !!(c.chips?.length || c.codeA || c.codeB || c.review);
@@ -503,6 +578,16 @@ export function IntelligenceFeed({
                 </div>
 
                 <div className="flex items-start gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void deleteCard(c.id)}
+                    disabled={deleting === c.id}
+                    className="inline-flex items-center gap-1 whitespace-nowrap rounded-lg border border-error/20 bg-error/5 px-2 py-1.5 text-[11px] font-bold text-error/90 transition-colors hover:bg-error/10 disabled:opacity-40"
+                    aria-label="删除卡片"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    {deleting === c.id ? "删除中" : "删除"}
+                  </button>
                   {hasDetails ? (
                     <button
                       type="button"
@@ -640,12 +725,14 @@ export function IntelligenceFeed({
               />
             </article>
           );
-        })}
+          })}
 
-        {!loading && filteredData.length === 0 && data.length > 0 ? (
-          <div className="rounded-2xl border border-dashed border-outline-variant/20 bg-surface-container-lowest/20 px-4 py-6 text-center text-xs text-on-surface-variant">
-            当前筛选下暂无卡片，切换上方标签查看其它类型。
-          </div>
+          {!loading && filteredData.length === 0 && localCards.length > 0 ? (
+            <div className="rounded-2xl border border-dashed border-outline-variant/20 bg-surface-container-lowest/20 px-4 py-2 text-center text-[11px] text-on-surface-variant">
+              当前筛选下暂无卡片，切换上方标签查看其它类型。
+            </div>
+          ) : null}
+        </div>
         ) : null}
       </div>
     </section>

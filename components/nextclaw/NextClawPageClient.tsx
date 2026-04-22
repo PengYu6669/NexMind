@@ -1,11 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppSidebar } from "@/components/layout/AppSidebar";
 import { AppTopBar } from "@/components/layout/AppTopBar";
 import { NextClawCommandBar } from "@/components/nextclaw/NextClawCommandBar";
 import { IntelligenceFeed, type IntelligenceFeedCard } from "@/components/nextclaw/IntelligenceFeed";
-import { AgentOpsPanel } from "@/components/nextclaw/AgentOpsPanel";
 import { NextClawTaskDesk } from "@/components/nextclaw/NextClawTaskDesk";
 import { consumeChatMessageSse } from "@/lib/chat-sse";
 
@@ -61,6 +60,7 @@ export function NextClawPageClient() {
         progress: number;
         currentStepLabel: string | null;
         steps: { id: string; label: string; status: string; toolSummary?: string }[];
+        generatedNotes?: { id: string; title: string }[];
       };
     }[]
   >([]);
@@ -88,6 +88,7 @@ export function NextClawPageClient() {
           progress: number;
           currentStepLabel: string | null;
           steps: { id: string; label: string; status: string; toolSummary?: string }[];
+          generatedNotes?: { id: string; title: string }[];
         };
       }[];
     };
@@ -130,12 +131,72 @@ export function NextClawPageClient() {
   }, [bootstrap]);
 
   useEffect(() => {
-    if (!activeAgentJobs.length) return;
-    const timer = window.setInterval(() => {
-      void refreshFeed().catch(() => {});
-    }, 3500);
-    return () => window.clearInterval(timer);
-  }, [activeAgentJobs.length, refreshFeed]);
+    // 用 SSE 替代轮询：实时推送 activeJobs/pendingJobs，避免整包刷新导致卡顿
+    let cancelled = false;
+    let abort: AbortController | null = null;
+
+    const connect = async () => {
+      abort?.abort();
+      abort = new AbortController();
+      try {
+        const res = await fetch("/api/nextclaw/feed/stream", {
+          credentials: "include",
+          headers: { Accept: "text/event-stream" },
+          signal: abort.signal,
+        });
+        if (!res.ok) {
+          throw new Error(res.status === 401 ? "请先登录" : `订阅失败：HTTP ${res.status}`);
+        }
+        if (!res.body) throw new Error("订阅响应为空");
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+
+        while (!cancelled) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const blocks = buffer.split("\n\n");
+          buffer = blocks.pop() ?? "";
+
+          for (const blk of blocks) {
+            const lines = blk.split("\n");
+            const event = (lines.find((x) => x.startsWith("event:")) ?? "").replace(/^event:\s*/, "").trim();
+            const dataLine = (lines.find((x) => x.startsWith("data:")) ?? "").replace(/^data:\s*/, "").trim();
+            if (!event || !dataLine) continue;
+            if (event === "ping") continue;
+            let payload: any = null;
+            try {
+              payload = JSON.parse(dataLine);
+            } catch {
+              continue;
+            }
+
+            if (event === "active_jobs") {
+              const jobs = Array.isArray(payload?.activeJobs) ? payload.activeJobs : [];
+              if (!cancelled) {
+                setActiveAgentJobs(jobs);
+                setPendingJobs(typeof payload?.pendingJobs === "number" ? payload.pendingJobs : 0);
+              }
+            }
+          }
+        }
+      } catch {
+        // 断线自动重连（不阻塞 UI）
+        if (cancelled) return;
+        setTimeout(() => {
+          if (!cancelled) void connect();
+        }, 1200);
+      }
+    };
+
+    void connect();
+    return () => {
+      cancelled = true;
+      abort?.abort();
+    };
+  }, []);
 
   const sendNextClaw = useCallback(
     async (text: string, opts?: { learningCardId?: string; noteId?: string }) => {
@@ -172,6 +233,13 @@ export function NextClawPageClient() {
     [conversationId, refreshFeed],
   );
 
+  // NOTE_EXTERNAL_INJECT（capture）是“资料摄取管道”，不属于多节点 Agent 工作流展示范畴；
+  // 中间区域只展示真正的学习/自治工作流，避免重复与错位。
+  const workflowJobs = useMemo(
+    () => activeAgentJobs.filter((j) => j.type !== "NOTE_EXTERNAL_INJECT"),
+    [activeAgentJobs],
+  );
+
   return (
     <div className="h-[100dvh] min-h-0 overflow-hidden bg-surface">
       <AppSidebar />
@@ -200,13 +268,16 @@ export function NextClawPageClient() {
             </div>
           </aside>
 
-          <main className="flex min-h-0 w-full flex-col overflow-hidden bg-surface-container-lowest/10 lg:w-[55%]">
+          <main className="flex min-h-0 w-full flex-col overflow-hidden bg-surface-container-lowest/10">
             <IntelligenceFeed
               cards={feedLoading ? null : feedCards}
               loading={feedLoading}
               error={feedError}
-              activeAgentJobs={feedLoading ? [] : activeAgentJobs}
+              activeAgentJobs={feedLoading ? [] : workflowJobs}
+              graphJobs={feedLoading ? [] : activeAgentJobs}
+              pendingJobs={pendingJobs}
               selectedAgentJobId={selectedAgentJobId}
+              onSelectAgentJob={(jobId) => setSelectedAgentJobId(jobId)}
               onAsk={(payload) => {
                 void sendNextClaw(payload.text, {
                   learningCardId: payload.cardId,
@@ -218,16 +289,6 @@ export function NextClawPageClient() {
               }}
             />
           </main>
-
-          <aside className="hidden min-h-0 w-[28%] min-w-[280px] flex-col overflow-hidden border-l border-outline-variant/10 bg-surface-container-lowest/20 glass-panel xl:flex">
-            <AgentOpsPanel
-              loading={feedLoading}
-              jobs={feedLoading ? [] : activeAgentJobs}
-              pendingJobs={pendingJobs}
-              selectedJobId={selectedAgentJobId}
-              onSelectJob={(jobId) => setSelectedAgentJobId(jobId)}
-            />
-          </aside>
         </div>
       </div>
     </div>

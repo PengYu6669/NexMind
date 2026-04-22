@@ -30,6 +30,7 @@ type TodayCard = {
   noteId: string;
   noteTitle: string;
   dbType: string;
+  uiTypeLabel?: string;
   title: string;
   summary: string;
   contentMdPreview: string;
@@ -71,6 +72,17 @@ type AiScoreResult = {
   lastScore: number;
   aiParsed?: AiParsed;
 };
+
+function cardTypeLabel(type: string): string {
+  if (type === "FILL_GAP") return "查漏补缺";
+  if (type === "PITFALL") return "易错提醒";
+  if (type === "CONFLICT") return "冲突校验";
+  if (type === "RELATED") return "关联拓展";
+  if (type === "REVIEW") return "知识复习";
+  if (type === "AUDIT") return "知识审计";
+  if (type === "EXTERNAL") return "外部补充";
+  return type;
+}
 
 function easeTag(easeFactor: number): { label: string; cls: string } {
   if (easeFactor < 2.0) return { label: "紧急", cls: "border-error/30 bg-error/10 text-error" };
@@ -327,8 +339,8 @@ export function LearnPageClient() {
                                   <div className="mt-1 text-[10px] text-on-surface-variant line-clamp-2">{c.summary}</div>
                                   <div className="mt-1 text-[10px] font-bold text-outline/70 truncate">{c.noteTitle}</div>
                                 </div>
-                                <span className="shrink-0 rounded-md border border-outline-variant/20 bg-surface-container-high/30 px-2 py-0.5 text-[10px] font-bold text-on-surface-variant">
-                                  {c.dbType}
+                                  <span className="shrink-0 rounded-md border border-outline-variant/20 bg-surface-container-high/30 px-2 py-0.5 text-[10px] font-bold text-on-surface-variant">
+                                  {cardTypeLabel(c.dbType)}
                                 </span>
                               </div>
                             </button>
@@ -534,14 +546,14 @@ function ReviewRightPanel({
         <div className="mt-2 whitespace-pre-wrap text-xs leading-relaxed text-on-surface/90">{item.corePreview || "（暂无要点预览）"}</div>
       </div>
 
-      <div className="rounded-2xl border border-outline-variant/10 bg-surface-container-lowest/20 p-4">
-        <div className="flex items-center justify-between gap-3">
-          <div className="text-xs font-black text-on-surface-variant">自测题 / 复习提示</div>
-        </div>
+      <details className="rounded-2xl border border-outline-variant/10 bg-surface-container-lowest/20 p-4">
+        <summary className="cursor-pointer text-xs font-black text-on-surface-variant">
+          展开自测题（1 题）
+        </summary>
         <div className="mt-2 whitespace-pre-wrap text-xs leading-relaxed text-on-surface/90">
-          {item.selfTestPreview || "（暂无自测提示）"}
+          {item.selfTestPreview || "（暂无自测题）"}
         </div>
-      </div>
+      </details>
 
       <div className="rounded-2xl border border-outline-variant/10 bg-surface-container-lowest/20 p-4">
         <div className="text-xs font-black text-on-surface-variant">作答提示（帮助你输出高质量回答）</div>
@@ -645,7 +657,7 @@ function CardRightPanel({ card }: { card: TodayCard }) {
       <div className="rounded-2xl border border-primary/25 bg-primary/5 p-4">
         <div className="text-sm font-black text-on-surface">{card.title}</div>
         <div className="mt-2 text-[11px] text-on-surface-variant">
-          类型：<span className="font-bold text-on-surface">{card.dbType}</span> · 来源：{" "}
+          类型：<span className="font-bold text-on-surface">{cardTypeLabel(card.dbType)}</span> · 来源：{" "}
           <Link href={`/notes/${card.noteId}`} className="font-bold text-primary hover:underline">
             {card.noteTitle}
           </Link>

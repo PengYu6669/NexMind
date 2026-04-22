@@ -20,6 +20,7 @@ import {
 import { RAG_TOPK_DEEP, RAG_TOPK_LITE } from "@/lib/nextclaw-agent-config";
 import type { PlanToolName } from "@/lib/nextclaw-agent-types";
 import { runNextClawSkill } from "@/lib/nextclaw-skills";
+import { emitLearningJobEvent } from "@/lib/learning-job-events";
 
 type JobType = "NOTE_LEARN_LITE" | "NOTE_LEARN_DEEP";
 
@@ -109,6 +110,16 @@ async function flushSteps(jobId: string, steps: LearningJobStepRecord[], extra?:
   });
   if (r.count === 0) {
     return;
+  }
+  // 尽力读取 userId（用于 SSE 过滤）；失败则跳过（不会影响任务执行）
+  try {
+    const row = await prisma.learningJob.findUnique({ where: { id: jobId }, select: { userId: true } });
+    if (row?.userId) {
+      emitLearningJobEvent({ type: "job_updated", userId: row.userId, jobId });
+      emitLearningJobEvent({ type: "jobs_changed", userId: row.userId });
+    }
+  } catch {
+    // ignore
   }
 }
 
@@ -966,7 +977,7 @@ function buildNextClawGraph() {
         conflicts.length ? "## 冲突点" : null,
         conflicts.length ? conflicts.map((x) => `- ${x}`).join("\n") : null,
         "",
-        fillGaps.length ? "## 知识补位点" : null,
+        fillGaps.length ? "## 查漏补缺点" : null,
         fillGaps.length ? fillGaps.map((x) => `- ${x}`).join("\n") : null,
         "",
         suggestLines.length ? "## 建议关联的笔记" : null,
@@ -977,7 +988,7 @@ function buildNextClawGraph() {
       cards.unshift({
         type: "AUDIT",
         title: "知识审计：与知识库对比",
-        contentMd: md || "（审计完成：未发现明显冲突或补位点）",
+        contentMd: md || "（审计完成：未发现明显冲突或查漏补缺点）",
         sources: { suggestedNoteIds: suggestIds },
       });
     }

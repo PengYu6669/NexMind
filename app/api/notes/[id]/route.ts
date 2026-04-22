@@ -14,20 +14,46 @@ export async function PATCH(
 
   const { id } = await context.params;
 
-  const body = (await req.json()) as { title?: string; content?: string; triggerLearning?: boolean };
-  const title = body.title?.trim();
+  const body = (await req.json()) as {
+    title?: string;
+    content?: string;
+    folderId?: string | null;
+    triggerLearning?: boolean;
+  };
   const content = body.content;
   const triggerLearning = body.triggerLearning === true;
+  const hasTitle = typeof body.title === "string";
+  const hasContent = typeof body.content === "string";
+  const hasFolder = "folderId" in body;
 
-  if (typeof title !== "string" && typeof content !== "string") {
-    return NextResponse.json({ error: "缺少 title 或 content" }, { status: 400 });
+  if (!hasTitle && !hasContent && !hasFolder) {
+    return NextResponse.json({ error: "缺少可更新字段（title / content / folderId）" }, { status: 400 });
+  }
+
+  let folderIdUpdate: string | null | undefined;
+  if (hasFolder) {
+    if (body.folderId === null) {
+      folderIdUpdate = null;
+    } else if (typeof body.folderId === "string") {
+      const fo = await prisma.noteFolder.findFirst({
+        where: { id: body.folderId, userId: user.id },
+        select: { id: true },
+      });
+      if (!fo) {
+        return NextResponse.json({ error: "文件夹不存在" }, { status: 400 });
+      }
+      folderIdUpdate = body.folderId;
+    } else {
+      return NextResponse.json({ error: "folderId 无效" }, { status: 400 });
+    }
   }
 
   const updated = await prisma.note.updateMany({
     where: { id, userId: user.id },
     data: {
-      ...(typeof title === "string" ? { title } : {}),
-      ...(typeof content === "string" ? { content } : {}),
+      ...(hasTitle ? { title: body.title!.trim() || "无标题" } : {}),
+      ...(hasContent ? { content: body.content as string } : {}),
+      ...(folderIdUpdate !== undefined ? { folderId: folderIdUpdate } : {}),
     },
   });
 
@@ -47,22 +73,24 @@ export async function PATCH(
     }
   }
 
-  // 异步建立/更新向量索引（失败不影响保存主流程）
-  try {
-    const latest = await prisma.note.findFirst({
-      where: { id, userId: user.id },
-      select: { id: true, title: true, content: true },
-    });
-    if (latest) {
-      await indexNoteForRag({
-        userId: user.id,
-        noteId: latest.id,
-        title: latest.title,
-        content: latest.content,
+  // 仅标题/正文变更时重建向量；仅移动文件夹不触发索引
+  if (hasTitle || hasContent) {
+    try {
+      const latest = await prisma.note.findFirst({
+        where: { id, userId: user.id },
+        select: { id: true, title: true, content: true },
       });
+      if (latest) {
+        await indexNoteForRag({
+          userId: user.id,
+          noteId: latest.id,
+          title: latest.title,
+          content: latest.content,
+        });
+      }
+    } catch {
+      // ignore
     }
-  } catch {
-    // ignore
   }
 
   // 学习任务改为“显式触发”：

@@ -29,7 +29,7 @@ function dedupeByNote(hits: RagHit[]): RagHit[] {
   return [...best.values()].sort((a, b) => a.distance - b.distance);
 }
 
-/** 嵌入知识库左栏：语义搜索 + 精简结果 */
+/** 嵌入知识库左栏：语义搜索 + 精简结果（无外层卡片盒子，由父级控制间距） */
 export function NotesKnowledgeSearch() {
   const searchParams = useSearchParams();
   const initialQ = searchParams.get("q")?.trim() ?? "";
@@ -91,7 +91,7 @@ export function NotesKnowledgeSearch() {
     query.trim().length > 0 && (loading || !!error || displayHits.length > 0 || (!loading && !error));
 
   return (
-    <div className="shrink-0 border-b border-outline-variant/10 bg-surface-container-low/40 px-4 py-3">
+    <div className="shrink-0 px-3 py-2">
       <form onSubmit={onSubmit} className="flex gap-2">
         <div className="relative min-w-0 flex-1">
           <MaterialIcon
@@ -102,7 +102,7 @@ export function NotesKnowledgeSearch() {
             type="search"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="语义搜索知识库…"
+            placeholder="语义搜索…"
             className="w-full rounded-lg border border-outline-variant/15 bg-surface-container-lowest py-2 pl-9 pr-3 text-xs text-on-surface outline-none ring-primary/20 placeholder:text-slate-500 focus:ring-1"
             autoComplete="off"
             aria-label="语义搜索知识库"

@@ -186,24 +186,4 @@ npm run mcp:nextclaw-search
 
 ---
 
-## 常用脚本
 
-```bash
-npm run dev
-npm run build
-npm run start
-npm run lint
-
-npm run db:generate
-npm run db:migrate
-npm run db:studio
-
-# MCP（可选）
-npm run mcp:nextclaw-bridge
-```
-
----
-
-## License
-
-本仓库未内置 License 文件；如需开源发布建议补充（MIT / Apache-2.0）。

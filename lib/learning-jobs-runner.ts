@@ -23,6 +23,7 @@ import {
 import { policyOf } from "@/lib/nextclaw-orchestrator-policy";
 import { ragSearch, stripHtmlToText } from "@/lib/rag";
 import { runNextClawLangGraphJob } from "@/lib/nextclaw-langgraph";
+import { emitLearningJobEvent } from "@/lib/learning-job-events";
 
 /** 与保存笔记自动入队、worker 跳过逻辑一致（纯文本字数，去 HTML） */
 export const MIN_NOTE_PLAIN_CHARS_FOR_LEARNING = 300;
@@ -102,6 +103,8 @@ export async function executeLearningJobsBatch(limit: number): Promise<LearningJ
           ...(extra?.plan ? { plan: extra.plan as Prisma.InputJsonValue } : {}),
         },
       });
+      emitLearningJobEvent({ type: "job_updated", userId: job.userId, jobId: job.id });
+      emitLearningJobEvent({ type: "jobs_changed", userId: job.userId });
     }
 
     async function ensureNotInterrupted() {

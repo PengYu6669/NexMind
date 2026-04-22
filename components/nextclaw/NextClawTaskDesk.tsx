@@ -154,17 +154,59 @@ export function NextClawTaskDesk({
       if (createMode === "capture") {
         const input = captureInput.trim();
         if (!input) throw new Error("请先输入 URL 或文本");
-        const captureRes = await fetch("/api/capture", {
+        const captureRes = await fetch("/api/capture?stream=1", {
           method: "POST",
           credentials: "include",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
           body: JSON.stringify({ input }),
         });
-        const captureData = (await captureRes.json().catch(() => null)) as { noteId?: string; error?: string } | null;
-        if (!captureRes.ok || !captureData?.noteId) {
+        if (!captureRes.ok || !captureRes.body) {
+          const captureData = (await captureRes.json().catch(() => null)) as { noteId?: string; error?: string } | null;
           throw new Error(captureData?.error || "提取笔记失败");
         }
-        targetNoteId = captureData.noteId;
+
+        const reader = captureRes.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let gotStarted = false;
+        let finalNoteId: string | null = null;
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const blocks = buffer.split("\n\n");
+          buffer = blocks.pop() ?? "";
+          for (const blk of blocks) {
+            const lines = blk.split("\n");
+            const event = (lines.find((x) => x.startsWith("event:")) ?? "").replace(/^event:\s*/, "").trim();
+            const dataLine = (lines.find((x) => x.startsWith("data:")) ?? "").replace(/^data:\s*/, "").trim();
+            if (!event || !dataLine) continue;
+            let payload: Record<string, unknown> = {};
+            try {
+              payload = JSON.parse(dataLine) as Record<string, unknown>;
+            } catch {
+              continue;
+            }
+            if (event === "job_started" && !gotStarted) {
+              gotStarted = true;
+              // 任务一创建就刷新，避免“发布任务卡住但列表没变化”
+              await refresh();
+              onTasksChanged?.();
+            }
+            if (event === "completed" || event === "done") {
+              const noteIdFromPayload =
+                typeof payload.noteId === "string" && payload.noteId ? payload.noteId : null;
+              if (noteIdFromPayload) finalNoteId = noteIdFromPayload;
+            }
+            if (event === "error") {
+              const msg = typeof payload.error === "string" ? payload.error : "提取笔记失败";
+              throw new Error(msg);
+            }
+          }
+        }
+        if (!finalNoteId) throw new Error("提取完成但未返回 noteId");
+        targetNoteId = finalNoteId;
       } else if (!targetNoteId) {
         throw new Error("请选择一个笔记");
       }

@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { redirect } from "next/navigation";
 import { AppSidebar } from "@/components/layout/AppSidebar";
 import { AppTopBar } from "@/components/layout/AppTopBar";
-import { NotesListPanel } from "@/components/layout/NotesListPanel";
+import { NotesLibrarySidebar } from "@/components/notes/NotesLibrarySidebar";
 import { getAuthUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
@@ -20,10 +20,16 @@ export default async function NotesLayout({ children }: { children: ReactNode })
   const user = await getAuthUser();
   if (!user) redirect("/login");
 
+  const folders = await prisma.noteFolder.findMany({
+    where: { userId: user.id },
+    orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+    select: { id: true, name: true, sortOrder: true },
+  });
+
   const notes = await prisma.note.findMany({
     where: { userId: user.id, archived: false },
     orderBy: [{ pinned: "desc" }, { updatedAt: "desc" }],
-    take: 30,
+    take: 80,
     include: { tags: { include: { tag: true } } },
   });
 
@@ -34,6 +40,8 @@ export default async function NotesLayout({ children }: { children: ReactNode })
     tags: note.tags.map((nt) => nt.tag.name),
     timeLabel: formatRelativeTime(note.updatedAt ?? note.createdAt),
     featured: note.pinned || idx === 0,
+    folderId: note.folderId,
+    pinned: note.pinned,
   }));
 
   return (
@@ -43,7 +51,11 @@ export default async function NotesLayout({ children }: { children: ReactNode })
         <AppTopBar />
         <div className="flex min-h-0 flex-1 pt-16">
           <div className="flex min-h-0 w-full max-w-sm shrink-0 flex-col self-stretch border-r border-outline-variant/10 lg:max-w-[320px]">
-            <NotesListPanel notes={list} className="min-h-0 flex-1 border-0" />
+            <NotesLibrarySidebar
+              folders={folders}
+              notes={list}
+              className="min-h-0 flex-1 border-0"
+            />
           </div>
           <div className="min-h-0 flex-1 bg-surface">{children}</div>
         </div>

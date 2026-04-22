@@ -4,24 +4,32 @@ import { Handle, Position, type NodeProps } from "reactflow";
 import type { WorkflowNodeData } from "@/components/graph/workflow-mapper";
 
 function stylesByVariant(v: WorkflowNodeData["variant"]) {
-  if (v === "auditNode") return "border-primary/35 bg-primary/10";
-  if (v === "knowledgeNode" || v === "reviewNode") return "border-emerald-500/30 bg-emerald-500/10";
-  if (v === "searchNode" || v === "toolNode") return "border-amber-400/30 bg-amber-400/10";
-  return "border-outline-variant/20 bg-surface-container-low/60";
+  if (v === "auditNode") return "bg-primary";
+  if (v === "knowledgeNode" || v === "reviewNode") return "bg-emerald-400";
+  if (v === "searchNode" || v === "toolNode") return "bg-amber-300";
+  return "bg-slate-200";
 }
 
 export function WorkflowNode({ data, selected }: NodeProps<WorkflowNodeData>) {
   return (
-    <div
-      className={`min-w-[220px] max-w-[260px] rounded-xl border p-3 shadow-sm backdrop-blur-sm ${stylesByVariant(data.variant)} ${
-        selected ? "ring-2 ring-primary/45" : ""
-      }`}
-    >
-      <Handle type="target" position={Position.Left} className="!size-2 !border-0 !bg-primary/70" />
-      <div className="text-[11px] font-black uppercase tracking-wider text-outline/75">{data.layer}</div>
-      <div className="mt-1 line-clamp-2 text-sm font-bold text-on-surface">{data.title}</div>
-      <div className="mt-1 text-[11px] text-on-surface-variant">{data.subtitle}</div>
-      <Handle type="source" position={Position.Right} className="!size-2 !border-0 !bg-primary/70" />
+    <div className="group relative min-w-[210px] max-w-[400px]">
+      <Handle type="target" position={Position.Left} className="!size-2 !border-0 !bg-primary/65" />
+      <div className="flex items-center gap-3">
+        <span
+          className={`inline-flex size-6 shrink-0 rounded-full shadow-[0_0_0_2px_rgba(255,255,255,0.06)] ${stylesByVariant(data.variant)} ${
+            selected ? "ring-4 ring-primary/45 ring-offset-2 ring-offset-surface" : "group-hover:ring-2 group-hover:ring-primary/25"
+          }`}
+        />
+        <span
+          className={`line-clamp-1 text-sm font-semibold tracking-tight text-on-surface/90 ${
+            selected ? "text-primary" : "group-hover:text-on-surface"
+          }`}
+          title={data.title}
+        >
+          {data.title}
+        </span>
+      </div>
+      <Handle type="source" position={Position.Right} className="!size-2 !border-0 !bg-primary/65" />
     </div>
   );
 }

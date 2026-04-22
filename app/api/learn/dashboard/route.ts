@@ -140,9 +140,12 @@ export async function GET() {
       const contentMd = card?.contentMd ?? "";
       const selfTest = extractHeadingSection(contentMd, "自测问题");
       const answerPoints = extractHeadingSection(contentMd, "参考答案要点");
-      const coreBefore = selfTest
-        ? contentMd.slice(0, contentMd.indexOf(selfTest)).trim()
-        : contentMd;
+      const coreKnowledge = extractHeadingSection(contentMd, "核心知识点");
+      const coreBefore = coreKnowledge
+        ? coreKnowledge
+        : selfTest
+          ? contentMd.slice(0, contentMd.indexOf(selfTest)).trim()
+          : contentMd;
 
       return {
         reviewItemId: r.id,
@@ -157,7 +160,7 @@ export async function GET() {
         reviewCardTitle: card?.title ?? "",
         reviewCardContentMd: contentMd,
         corePreview: mdToPlainSummary(coreBefore, 240),
-        selfTestPreview: selfTest ? mdToPlainSummary(selfTest, 600) : mdToPlainSummary(contentMd, 600),
+        selfTestPreview: selfTest ? mdToPlainSummary(selfTest, 220) : "",
         answerPointsPreview: answerPoints ? mdToPlainSummary(answerPoints, 360) : "",
         answerPointItems: answerPoints ? extractBulletItems(answerPoints, 8) : [],
         estimatedMinutes: Math.max(

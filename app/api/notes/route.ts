@@ -22,16 +22,43 @@ export async function GET(req: Request) {
 }
 
 /** 新建笔记：返回 noteId，随后前端跳转 /notes/:id */
-export async function POST(_req: Request) {
+export async function POST(req: Request) {
   const user = await getAuthUser();
   if (!user) return NextResponse.json({ error: "未登录" }, { status: 401 });
+
+  const body = (await req.json().catch(() => ({}))) as {
+    title?: string;
+    folderId?: string | null;
+  };
+
+  const titleRaw = typeof body.title === "string" ? body.title.trim() : "";
+  const title = titleRaw || "无标题";
+
+  let folderId: string | null | undefined;
+  if (body.folderId !== undefined) {
+    if (body.folderId === null) {
+      folderId = null;
+    } else if (typeof body.folderId === "string") {
+      const fo = await prisma.noteFolder.findFirst({
+        where: { id: body.folderId, userId: user.id },
+        select: { id: true },
+      });
+      if (!fo) {
+        return NextResponse.json({ error: "文件夹不存在" }, { status: 400 });
+      }
+      folderId = body.folderId;
+    } else {
+      return NextResponse.json({ error: "folderId 无效" }, { status: 400 });
+    }
+  }
 
   const note = await prisma.note.create({
     data: {
       userId: user.id,
-      title: "无标题",
+      title,
       content: "",
       sourceType: "manual",
+      ...(folderId !== undefined ? { folderId } : {}),
     },
     select: { id: true },
   });

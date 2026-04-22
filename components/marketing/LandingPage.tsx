@@ -4,25 +4,26 @@ import { MaterialIcon } from "@/components/ui/MaterialIcon";
 
 export function LandingPage() {
   return (
-    <div className="overflow-x-hidden font-body text-on-surface antialiased selection:bg-primary/30">
-      <div className="fixed inset-0 z-[-1] bg-surface-container-lowest">
+    <div className="min-w-0 font-body text-on-surface antialiased selection:bg-primary/30">
+      <div className="fixed inset-0 z-[-1] overflow-hidden bg-surface-container-lowest">
         <div className="absolute inset-0 tech-grid" />
         <div className="glow-orb animate-breathe absolute left-[-10%] top-[-10%] h-[50%] w-[50%] rounded-full bg-primary" />
         <div
           className="glow-orb animate-breathe absolute bottom-[-10%] right-[-10%] h-[40%] w-[40%] rounded-full bg-primary-container"
           style={{ animationDelay: "-4s" }}
         />
+        {/* 放在背景层：避免叠在正文上；保留扫描氛围 */}
+        <div
+          className="animate-scan-line pointer-events-none absolute left-0 z-0 h-1 w-full bg-gradient-to-r from-transparent via-primary/10 to-transparent"
+          style={{ boxShadow: "0 0 10px rgba(192, 193, 255, 0.08)" }}
+        />
       </div>
 
       <MarketingNav />
 
-      <div
-        className="animate-scan-line pointer-events-none fixed left-0 z-[60] h-1 w-full bg-gradient-to-r from-transparent via-primary/10 to-transparent"
-        style={{ boxShadow: "0 0 10px rgba(192, 193, 255, 0.1)" }}
-      />
-
-      <main className="relative flex min-h-screen flex-col items-center justify-center px-6 pt-20">
-        <div className="w-full max-w-4xl space-y-12 text-center">
+      <main className="relative z-20 flex min-h-screen flex-col items-center justify-center px-4 pt-20 sm:px-6">
+        {/* 首屏：水平居中；标题略缩小 + 单行不换行，避免「AI 第二大脑」折行 */}
+        <div className="flex w-full min-w-0 max-w-5xl flex-col items-center space-y-10 text-center">
           <div className="inline-flex items-center gap-2 rounded-full border border-outline-variant/20 bg-surface-container-high/50 px-3 py-1 text-[10px] font-bold uppercase tracking-widest text-primary">
             <span className="relative flex h-2 w-2">
               <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-75" />
@@ -31,19 +32,21 @@ export function LandingPage() {
             系统 v1.0.4-beta
           </div>
 
-          <div className="space-y-6">
-            <h1 className="font-headline text-5xl font-extrabold tracking-tighter text-transparent bg-gradient-to-b from-on-surface to-on-surface-variant/40 bg-clip-text md:text-7xl lg:text-8xl">
-              NexMind · AI 第二大脑
-            </h1>
-            <p className="mx-auto max-w-2xl font-body text-lg font-light leading-relaxed tracking-wide text-on-surface-variant md:text-xl">
+          <div className="w-full min-w-0 space-y-5">
+            <div className="w-full text-center">
+              <h1 className="inline-block max-w-full font-headline text-[clamp(0.78rem,3.1vw+0.35rem,2.6rem)] font-extrabold leading-tight tracking-tight text-on-surface whitespace-nowrap">
+                NexMind · AI 第二大脑
+              </h1>
+            </div>
+            <p className="mx-auto max-w-2xl font-body text-base font-light leading-relaxed tracking-wide text-on-surface-variant sm:text-lg md:text-xl">
               个人智能笔记助手与知识库。通过深度神经网络构建您的数字心智，实现海量信息的秒级检索与逻辑重组。
             </p>
           </div>
 
-          <div className="flex flex-col items-center justify-center gap-6 pt-4 sm:flex-row">
+          <div className="flex flex-col items-center justify-center gap-4 pt-2 sm:flex-row">
             <Link
               href="/dashboard"
-              className="group relative flex items-center gap-3 rounded-xl bg-gradient-to-br from-primary to-primary-container px-10 py-4 text-lg font-bold text-on-primary transition-all duration-300 hover:scale-[1.02] hover:shadow-[0_0_30px_rgba(192,193,255,0.3)]"
+              className="group relative inline-flex items-center gap-3 rounded-xl bg-gradient-to-br from-primary to-primary-container px-8 py-3.5 text-base font-bold text-on-primary transition-all duration-300 hover:scale-[1.02] hover:shadow-[0_0_30px_rgba(192,193,255,0.3)] sm:px-10 sm:py-4 sm:text-lg"
             >
               进入系统
               <MaterialIcon
@@ -51,16 +54,10 @@ export function LandingPage() {
                 className="transition-transform group-hover:translate-x-1"
               />
             </Link>
-            <a
-              href="#features"
-              className="rounded-xl border border-outline-variant/30 bg-transparent px-10 py-4 text-lg font-bold text-primary transition-colors duration-200 hover:bg-surface-container-low"
-            >
-              了解更多
-            </a>
           </div>
         </div>
 
-        <section id="features" className="mt-32 grid w-full max-w-6xl grid-cols-1 gap-6 md:grid-cols-12">
+        <section id="features" className="mx-auto mt-32 grid w-full max-w-6xl grid-cols-1 gap-6 md:grid-cols-12">
           <div className="glass-panel flex min-h-[320px] flex-col justify-between rounded-xl border border-outline-variant/10 bg-surface-container-low/40 p-8 md:col-span-7">
             <div className="space-y-4">
               <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10">
@@ -131,7 +128,14 @@ export function LandingPage() {
 
         <footer className="mb-12 mt-32 w-full max-w-6xl border-t border-outline-variant/10 py-8">
           <div className="flex flex-col items-center gap-2 text-center font-mono text-[10px] uppercase tracking-widest text-on-surface-variant/60">
-            <span>© 2024 NexMind</span>
+            <a
+              href="https://github.com/PengYu6669"
+              target="_blank"
+              rel="noreferrer"
+              className="transition-colors hover:text-primary"
+            >
+              © PengYu6669
+            </a>
           </div>
         </footer>
       </main>

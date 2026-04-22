@@ -2,21 +2,39 @@ import { NextResponse } from "next/server";
 import { getAuthUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
-/**
- * 知识图谱工作流：
- * - input: 用户笔记（note）
- * - agent: NextClaw 执行产物（learning card）
- * - output: 任务执行输出（succeeded learning job）
- */
-export async function GET() {
+/** 知识图谱：仅展示笔记节点与笔记之间引用关系。 */
+export async function GET(req: Request) {
   const user = await getAuthUser();
   if (!user) return NextResponse.json({ error: "未登录" }, { status: 401 });
+  const reqUrl = new URL(req.url);
+  const folderIdRaw = reqUrl.searchParams.get("folderId")?.trim() ?? "";
+  const folderFilter =
+    folderIdRaw === "__all__" || !folderIdRaw
+      ? { mode: "all" as const }
+      : folderIdRaw === "__uncat__"
+        ? { mode: "uncat" as const }
+        : { mode: "folder" as const, folderId: folderIdRaw };
 
-  const [notes, links, cards, jobs] = await Promise.all([
+  if (folderFilter.mode === "folder") {
+    const ok = await prisma.noteFolder.findFirst({
+      where: { id: folderFilter.folderId, userId: user.id },
+      select: { id: true },
+    });
+    if (!ok) {
+      return NextResponse.json({ error: "文件夹不存在" }, { status: 400 });
+    }
+  }
+
+  const [notes, links] = await Promise.all([
     prisma.note.findMany({
-      where: { userId: user.id, archived: false },
+      where: {
+        userId: user.id,
+        archived: false,
+        ...(folderFilter.mode === "folder" ? { folderId: folderFilter.folderId } : {}),
+        ...(folderFilter.mode === "uncat" ? { folderId: null } : {}),
+      },
       orderBy: [{ pinned: "desc" }, { updatedAt: "desc" }],
-      select: { id: true, title: true, excerpt: true, updatedAt: true },
+      select: { id: true, title: true, excerpt: true, updatedAt: true, folderId: true },
     }),
     prisma.noteLink.findMany({
       where: {
@@ -26,19 +44,9 @@ export async function GET() {
       },
       select: { fromNoteId: true, toNoteId: true },
     }),
-    prisma.learningCard.findMany({
-      where: { userId: user.id },
-      orderBy: { createdAt: "desc" },
-      take: 80,
-      select: { id: true, noteId: true, type: true, title: true, contentMd: true, createdAt: true },
-    }),
-    prisma.learningJob.findMany({
-      where: { userId: user.id, status: "SUCCEEDED" },
-      orderBy: { finishedAt: "desc" },
-      take: 60,
-      select: { id: true, noteId: true, type: true, status: true, steps: true, finishedAt: true, updatedAt: true },
-    }),
   ]);
+  const noteIdSet = new Set(notes.map((n) => n.id));
+  const linksFiltered = links.filter((e) => noteIdSet.has(e.fromNoteId) && noteIdSet.has(e.toNoteId));
 
   const degree = new Map<string, number>();
   const edgeList: Array<{
@@ -46,34 +54,56 @@ export async function GET() {
     target: string;
     kind: "LINK" | "DERIVED_FROM" | "PRODUCES" | "CONFLICT_HINT";
   }> = [];
+  const edgeKeys = new Set<string>();
   const pushEdge = (
     source: string,
     target: string,
     kind: "LINK" | "DERIVED_FROM" | "PRODUCES" | "CONFLICT_HINT",
   ) => {
+    const k = `${source}->${target}`;
+    if (edgeKeys.has(k)) return;
+    edgeKeys.add(k);
     edgeList.push({ source, target, kind });
     degree.set(source, (degree.get(source) ?? 0) + 1);
     degree.set(target, (degree.get(target) ?? 0) + 1);
   };
 
   for (const n of notes) degree.set(`note:${n.id}`, 0);
-  for (const c of cards) degree.set(`card:${c.id}`, 0);
-  for (const j of jobs) degree.set(`job:${j.id}`, 0);
 
-  for (const e of links) {
+  for (const e of linksFiltered) {
     pushEdge(`note:${e.fromNoteId}`, `note:${e.toNoteId}`, "LINK");
   }
-  for (const c of cards) {
-    pushEdge(`note:${c.noteId}`, `card:${c.id}`, "DERIVED_FROM");
-    if (c.type === "CONFLICT") {
-      pushEdge(`card:${c.id}`, `note:${c.noteId}`, "CONFLICT_HINT");
+
+  // 视觉聚合：同文件夹笔记自动成环（不依赖显式双向链接）
+  // - folder 模式：当前结果集即该文件夹，直接整体成环（更鲁棒）
+  // - all 模式：按 folderId 分组后各自成环（未分类不参与）
+  const linkAsRing = (bucket: typeof notes) => {
+    if (bucket.length < 2) return;
+    const ordered = [...bucket].sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
+    if (ordered.length === 2) {
+      pushEdge(`note:${ordered[0]!.id}`, `note:${ordered[1]!.id}`, "LINK");
+      return;
     }
-  }
-  for (const j of jobs) {
-    if (!j.noteId) continue;
-    const latestCard = cards.find((c) => c.noteId === j.noteId);
-    if (latestCard) pushEdge(`card:${latestCard.id}`, `job:${j.id}`, "PRODUCES");
-    else pushEdge(`note:${j.noteId}`, `job:${j.id}`, "PRODUCES");
+    for (let i = 0; i < ordered.length; i += 1) {
+      const from = ordered[i]!;
+      const to = ordered[(i + 1) % ordered.length]!;
+      pushEdge(`note:${from.id}`, `note:${to.id}`, "LINK");
+    }
+  };
+
+  if (folderFilter.mode === "folder") {
+    linkAsRing(notes);
+  } else {
+    const folderBuckets = new Map<string, typeof notes>();
+    for (const n of notes) {
+      if (!n.folderId) continue;
+      const arr = folderBuckets.get(n.folderId) ?? [];
+      arr.push(n);
+      folderBuckets.set(n.folderId, arr);
+    }
+    for (const [, bucket] of folderBuckets) {
+      linkAsRing(bucket);
+    }
   }
 
   return NextResponse.json({
@@ -87,32 +117,8 @@ export async function GET() {
         updatedAt: n.updatedAt.toISOString(),
         reasoningLog: [
           `知识源：${n.title || "无标题"}`,
-          "与其关联的学习卡片可用于补位、冲突识别与复习。",
+          "点击节点可直接跳转到对应笔记。",
         ],
-      })),
-      ...cards.map((c) => ({
-        id: `card:${c.id}`,
-        nodeKind: "card" as const,
-        title: c.title,
-        degree: degree.get(`card:${c.id}`) ?? 0,
-        excerpt: c.contentMd.slice(0, 220),
-        updatedAt: c.createdAt.toISOString(),
-        reasoningLog: [
-          `卡片类型：${c.type}`,
-          `来源笔记：${c.noteId}`,
-          c.contentMd.slice(0, 120) || "内容为空",
-        ],
-      })),
-      ...jobs.map((j) => ({
-        id: `job:${j.id}`,
-        nodeKind: "job" as const,
-        title: `任务输出：${j.type}`,
-        degree: degree.get(`job:${j.id}`) ?? 0,
-        excerpt: j.status === "SUCCEEDED" ? "执行记录：用于回溯，不代表实时状态。" : "任务未成功。",
-        updatedAt: (j.finishedAt ?? j.updatedAt).toISOString(),
-        reasoningLog: Array.isArray(j.steps)
-          ? (j.steps as Array<{ label?: unknown; status?: unknown }>).slice(-4).map((s) => `${String(s.label ?? "step")} [${String(s.status ?? "")}]`)
-          : ["执行记录为空"],
       })),
     ],
     edges: edgeList,

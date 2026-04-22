@@ -22,9 +22,11 @@ export function AnimatedAuditEdge(props: EdgeProps<{ active?: boolean }>) {
         markerEnd={props.markerEnd}
         style={{
           stroke: active ? "rgba(99,102,241,0.9)" : "rgba(148,163,184,0.5)",
-          strokeWidth: active ? 2 : 1.4,
-          strokeDasharray: "8 8",
-          animation: "auditEdgeFlow 1.1s linear infinite",
+          strokeWidth: active ? 2.4 : 1.6,
+          strokeDasharray: active ? "12 8" : "6 8",
+          strokeDashoffset: 0,
+          animation: active ? "auditEdgeFlow 0.9s linear infinite" : "auditEdgeFlow 1.6s linear infinite",
+          filter: active ? "drop-shadow(0 0 3px rgba(99,102,241,0.5))" : "none",
         }}
       />
       {active ? (

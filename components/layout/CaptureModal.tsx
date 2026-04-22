@@ -9,22 +9,79 @@ export function CaptureModal({ open, onClose }: { open: boolean; onClose: () => 
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [progress, setProgress] = useState<string>("待开始");
+  const [createdNotes, setCreatedNotes] = useState(0);
 
   async function onSubmit() {
     setError(null);
     setLoading(true);
+    setProgress("启动抓取任务...");
+    setCreatedNotes(0);
     try {
-      const res = await fetch("/api/capture", {
+      const res = await fetch("/api/capture?stream=1", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
         body: JSON.stringify({ input }),
       });
-      const data = (await res.json().catch(() => null)) as { error?: string; noteId?: string } | null;
-      if (!res.ok || !data?.noteId) {
-        throw new Error(data?.error || "捕获失败");
+
+      if (!res.ok) {
+        const j = (await res.json().catch(() => null)) as { error?: string } | null;
+        throw new Error(j?.error || "捕获失败");
+      }
+      if (!res.body) throw new Error("流式响应为空");
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let finalNoteId: string | null = null;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const events = buffer.split("\n\n");
+        buffer = events.pop() ?? "";
+
+        for (const raw of events) {
+          const lines = raw.split("\n");
+          const eventLine = lines.find((x) => x.startsWith("event:")) ?? "";
+          const dataLine = lines.find((x) => x.startsWith("data:")) ?? "";
+          const event = eventLine.replace(/^event:\s*/, "").trim();
+          const payloadText = dataLine.replace(/^data:\s*/, "").trim();
+          if (!payloadText) continue;
+          let payload: Record<string, unknown> = {};
+          try {
+            payload = JSON.parse(payloadText) as Record<string, unknown>;
+          } catch {
+            continue;
+          }
+
+          if (event === "job_started") {
+            setProgress("任务已创建，准备抽取正文...");
+          } else if (event === "step") {
+            const step = payload.step as { label?: string; toolSummary?: string } | undefined;
+            setProgress(step?.label ? String(step.label) : "处理中...");
+          } else if (event === "chunk_created") {
+            const created = Number(payload.createdNotes ?? 0);
+            if (Number.isFinite(created)) setCreatedNotes(created);
+            setProgress(`已生成 ${created} 篇分片笔记...`);
+          } else if (event === "linked") {
+            setProgress("正在建立笔记关联边...");
+          } else if (event === "completed" || event === "done") {
+            finalNoteId =
+              typeof payload.noteId === "string" && payload.noteId ? payload.noteId : finalNoteId;
+            setProgress("完成，正在跳转...");
+          } else if (event === "error") {
+            throw new Error(typeof payload.error === "string" ? payload.error : "捕获失败");
+          }
+        }
+      }
+
+      if (!finalNoteId) {
+        throw new Error("未返回 noteId");
       }
       onClose();
-      router.push(`/notes/${data.noteId}`);
+      router.push(`/notes/${finalNoteId}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : "捕获失败");
     } finally {
@@ -64,6 +121,13 @@ export function CaptureModal({ open, onClose }: { open: boolean; onClose: () => 
             value={input}
             onChange={(e) => setInput(e.target.value)}
           />
+
+          {loading ? (
+            <div className="rounded-lg border border-outline-variant/15 bg-surface-container-lowest/40 px-3 py-2 text-xs text-on-surface-variant">
+              <div>{progress}</div>
+              <div className="mt-1 text-[11px] text-outline/75">已生成笔记：{createdNotes}</div>
+            </div>
+          ) : null}
 
           {error ? (
             <p className="text-sm font-medium text-on-error-container" role="alert">
