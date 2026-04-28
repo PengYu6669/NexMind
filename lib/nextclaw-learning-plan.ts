@@ -84,7 +84,7 @@ export async function generateLearningPlan(params: {
 
   const user = JSON.stringify({
     noteTitle: params.noteTitle,
-    noteSnippet: params.noteSnippet.slice(0, 4000),
+    noteSnippet: params.noteSnippet.slice(0, 2000),
     relatedSummaries: params.relatedLines.slice(0, 8),
     urls: (params.urls ?? []).slice(0, 5),
   });

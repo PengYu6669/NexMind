@@ -3,7 +3,8 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAuthUser } from "@/lib/auth";
 import { extractTextFromUrl, normalizeCaptureInput } from "@/lib/extractPage";
-import { generateCaptureChunkNote, generateCaptureResult, planCaptureChunking } from "@/lib/doubao";
+import { generateCaptureChunkNote, generateCaptureResult } from "@/lib/doubao";
+import { enqueueLearningJob } from "@/lib/note-learning-enqueue";
 import { emitLearningJobEvent } from "@/lib/learning-job-events";
 
 type StepStatus = "done" | "running" | "failed";
@@ -18,6 +19,18 @@ type JobStep = {
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function preliminaryTitle(input: string): string {
+  if (input.startsWith("http://") || input.startsWith("https://")) {
+    try {
+      const url = new URL(input);
+      const host = url.hostname.replace(/^www\./, "");
+      const path = url.pathname !== "/" ? " " + url.pathname.replace(/[/]/g, " ").trim().slice(0, 40) : "";
+      return (host + path).trim().slice(0, 60);
+    } catch { /* ignore */ }
+  }
+  return input.replace(/[\n\r]+/g, " ").trim().slice(0, 60);
 }
 
 async function ensureFolder(userId: string, name: string) {
@@ -166,22 +179,26 @@ type CaptureResult = {
   folder: { raw: string; theme: string };
   edges: Array<{ fromNoteId: string; toNoteId: string }>;
   jobId: string;
+  learningJobIds: string[];
 };
 
 async function runCapturePipeline(params: {
   userId: string;
   input: string;
+  mode?: "lite" | "deep";
   onProgress?: (event: {
     type: "job_started" | "step" | "chunk_created" | "linked" | "completed";
     jobId: string;
     payload: Record<string, unknown>;
   }) => Promise<void> | void;
 }): Promise<CaptureResult> {
+  const preliminary = preliminaryTitle(params.input);
   const captureJob = await prisma.learningJob.create({
     data: {
       userId: params.userId,
       type: "NOTE_EXTERNAL_INJECT",
       status: "RUNNING",
+      title: preliminary,
     },
     select: { id: true },
   });
@@ -241,6 +258,11 @@ async function runCapturePipeline(params: {
   const keyPoints = ai.keyPoints ?? [];
   const excerpt = keyPoints.length ? keyPoints.join("；") : undefined;
   const cleanedForTheme = (ai.cleanedContent || "").trim();
+  // AI 生成真实标题后更新 job title
+  await prisma.learningJob.updateMany({
+    where: { id: captureJob.id },
+    data: { title: noteTitle },
+  });
   const predictedTheme = classifyTheme({
     title: noteTitle,
     tags: ai.tags ?? [],
@@ -265,39 +287,35 @@ async function runCapturePipeline(params: {
     tagIds.push(created.id);
   }
 
-  // 分片基于“规则清洗后的正文”与“AI cleanedContent”综合：
+  // 分片基于"规则清洗后的正文"与"AI cleanedContent"综合：
   // - cleanedContent 更适合笔记化（去噪更强）
   // - rawText 用作兜底（防止 AI 过度删减导致信息缺失）
-  // cleanedContent 过短时会导致“长文只出 1 个 chunk”，此处按比例回退原文
+  // cleanedContent 过短时会导致"长文只出 1 个 chunk"，此处按比例回退原文
   const cleanedRatio = rawText.length > 0 ? cleanedForTheme.length / rawText.length : 0;
   const shouldUseCleaned =
     cleanedForTheme.length >= 1200 &&
     (rawText.length < 2600 || cleanedRatio >= 0.58);
   const chunkBaseText = shouldUseCleaned ? cleanedForTheme : rawText;
-  const splitPlan = await planCaptureChunking({
-    title: noteTitle,
-    tags: ai.tags ?? [],
-    cleanedContent: cleanedForTheme,
-    rawText,
-  });
+  // 启发式分片：根据正文长度估算目标分片数与单片字符数，替代 AI 调用
+  const heuristicTargetChunks = clampChunkBudget(rawText.length, 1).max;
+  const heuristicChunkChars = rawText.length >= 14000 ? 2200 : rawText.length >= 8000 ? 2000 : 1800;
   await pushStep({
     id: "capture-plan-chunks",
     phase: "think",
-    label: "Agent 规划分片粒度",
+    label: "启发式规划分片",
     status: "done",
     at: nowIso(),
-    toolSummary: `targetChunks=${splitPlan.targetChunks}; preferredChunkChars=${splitPlan.preferredChunkChars}; reason=${splitPlan.reason}`,
+    toolSummary: `targetChunks=${heuristicTargetChunks}; preferredChars=${heuristicChunkChars}; rawChars=${rawText.length}`,
   });
 
-  let chunkChars = splitPlan.preferredChunkChars;
+  let chunkChars = heuristicChunkChars;
   let chunks = chunkTextByParagraphs(chunkBaseText, chunkChars, Math.min(260, Math.round(chunkChars * 0.12)));
-  // 按 agent 规划动态收敛，不用硬编码档位
   for (let i = 0; i < 4; i += 1) {
-    if (chunks.length >= splitPlan.targetChunks) break;
+    if (chunks.length >= heuristicTargetChunks) break;
     chunkChars = Math.max(1200, chunkChars - 220);
     chunks = chunkTextByParagraphs(chunkBaseText, chunkChars, Math.min(220, Math.round(chunkChars * 0.1)));
   }
-  const budget = clampChunkBudget(rawText.length, splitPlan.targetChunks);
+  const budget = clampChunkBudget(rawText.length, heuristicTargetChunks);
   if (chunks.length > budget.max) {
     chunks = mergeAdjacentChunks(chunks, budget.max);
   } else if (chunks.length < budget.min) {
@@ -310,12 +328,11 @@ async function runCapturePipeline(params: {
   await pushStep({
     id: "capture-chunk-budget",
     phase: "think",
-    label: "Agent 收敛分片预算",
+    label: "收敛分片预算",
     status: "done",
     at: nowIso(),
-    toolSummary: `planned=${splitPlan.targetChunks}; actual=${chunks.length}; budget=${budget.min}-${budget.max}; rawChars=${rawText.length}`,
+    toolSummary: `target=${heuristicTargetChunks}; actual=${chunks.length}; budget=${budget.min}-${budget.max}`,
   });
-  const createdNoteIds: string[] = [];
   const folderIdCache = new Map<string, string>();
   let finalTheme = predictedTheme;
 
@@ -323,94 +340,117 @@ async function runCapturePipeline(params: {
     throw new Error("未能从来源中抽取到可用正文（内容过短或被清洗为空）");
   }
 
+  // 并行生成 chunk 笔记（并发 3），不改变单篇生成逻辑
+  const createdNoteIds: (string | null)[] = new Array(chunks.length).fill(null);
+  const CONCURRENCY = 3;
+
+  // 先推送全部 running 步骤
   for (let i = 0; i < chunks.length; i += 1) {
-    const chunk = chunks[i]!;
-    const stepId = `capture-chunk-${i + 1}`;
     await pushStep({
-      id: stepId,
+      id: `capture-chunk-${i + 1}`,
       phase: "done",
       label: `AI 整理并写入笔记 ${i + 1}/${chunks.length}`,
       status: "running",
       at: nowIso(),
     });
-
-    const chunkAi = await generateCaptureChunkNote({
-      globalTitle: noteTitle,
-      globalTags: ai.tags ?? [],
-      chunkText: chunk,
-      index: i,
-      total: chunks.length,
-      sourceUrl: normalized.sourceType === "url" ? normalized.sourceUrl : undefined,
-    });
-
-    const folderName = chunkAi.folder ?? predictedTheme;
-    // 若只有一个 chunk，则以 chunk folder 作为最终主题（避免“公司”空文件夹/割裂感）
-    if (chunks.length === 1) finalTheme = folderName;
-    if (!folderIdCache.has(folderName)) {
-      folderIdCache.set(folderName, await ensureFolder(params.userId, folderName));
-    }
-    const folderId = folderIdCache.get(folderName)!;
-
-    // chunk 级 tags：合并全局 tags + chunk tags（去重）
-    const mergedTagNames = Array.from(new Set([...(ai.tags ?? []), ...(chunkAi.tags ?? [])])).slice(0, 10);
-    const chunkTagIds: string[] = [];
-    for (const tagName of mergedTagNames) {
-      const name = tagName.startsWith("#") ? tagName : `#${tagName}`;
-      const existed = await prisma.tag.findFirst({
-        where: { userId: params.userId, name },
-        select: { id: true },
-      });
-      if (existed?.id) {
-        chunkTagIds.push(existed.id);
-        continue;
-      }
-      const created = await prisma.tag.create({
-        data: { userId: params.userId, name },
-        select: { id: true },
-      });
-      chunkTagIds.push(created.id);
-    }
-
-    const note = await prisma.note.create({
-      data: {
-        title: chunkAi.title,
-        content: chunkAi.markdown,
-        excerpt: (chunkAi.markdown || "").replace(/\s+/g, " ").slice(0, 260),
-        sourceUrl: normalized.sourceType === "url" ? normalized.sourceUrl : undefined,
-        sourceType: "capture",
-        folderId,
-        userId: params.userId,
-        tags:
-          chunkTagIds.length > 0
-            ? {
-                create: chunkTagIds.map((tagId) => ({ tagId })),
-              }
-            : undefined,
-      },
-      select: { id: true },
-    });
-    createdNoteIds.push(note.id);
-
-    steps[steps.length - 1] = {
-      ...steps[steps.length - 1]!,
-      status: "done",
-      toolSummary: `chunkChars=${chunk.length}; noteId=${note.id}; createdNotes=${createdNoteIds.length}; folder=${folderName}; title=${chunkAi.title}`,
-    };
-    await flushCaptureJob(params.userId, captureJob.id, steps, "RUNNING");
-    await params.onProgress?.({
-      type: "chunk_created",
-      jobId: captureJob.id,
-      payload: { noteId: note.id, index: i + 1, total: chunks.length, createdNotes: createdNoteIds.length },
-    });
   }
 
-  if (!createdNoteIds.length) {
+  for (let batchStart = 0; batchStart < chunks.length; batchStart += CONCURRENCY) {
+    const batchEnd = Math.min(batchStart + CONCURRENCY, chunks.length);
+    const batchResults = await Promise.allSettled(
+      Array.from({ length: batchEnd - batchStart }, async (_, offset) => {
+        const i = batchStart + offset;
+        const chunk = chunks[i]!;
+
+        const chunkAi = await generateCaptureChunkNote({
+          globalTitle: noteTitle,
+          globalTags: ai.tags ?? [],
+          chunkText: chunk,
+          index: i,
+          total: chunks.length,
+          sourceUrl: normalized.sourceType === "url" ? normalized.sourceUrl : undefined,
+        });
+
+        const folderName = chunkAi.folder ?? predictedTheme;
+        if (chunks.length === 1) finalTheme = folderName;
+        if (!folderIdCache.has(folderName)) {
+          folderIdCache.set(folderName, await ensureFolder(params.userId, folderName));
+        }
+        const folderId = folderIdCache.get(folderName)!;
+
+        const mergedTagNames = Array.from(new Set([...(ai.tags ?? []), ...(chunkAi.tags ?? [])])).slice(0, 10);
+        const chunkTagIds: string[] = [];
+        for (const tagName of mergedTagNames) {
+          const name = tagName.startsWith("#") ? tagName : `#${tagName}`;
+          const existed = await prisma.tag.findFirst({
+            where: { userId: params.userId, name },
+            select: { id: true },
+          });
+          if (existed?.id) {
+            chunkTagIds.push(existed.id);
+            continue;
+          }
+          const created = await prisma.tag.create({
+            data: { userId: params.userId, name },
+            select: { id: true },
+          });
+          chunkTagIds.push(created.id);
+        }
+
+        const note = await prisma.note.create({
+          data: {
+            title: chunkAi.title,
+            content: chunkAi.markdown,
+            excerpt: (chunkAi.markdown || "").replace(/\s+/g, " ").slice(0, 260),
+            sourceUrl: normalized.sourceType === "url" ? normalized.sourceUrl : undefined,
+            sourceType: "capture",
+            folderId,
+            userId: params.userId,
+            tags:
+              chunkTagIds.length > 0
+                ? { create: chunkTagIds.map((tagId) => ({ tagId })) }
+                : undefined,
+          },
+          select: { id: true },
+        });
+
+        return { noteId: note.id, chunkAi, folderName, index: i, chunk };
+      }),
+    );
+
+    for (const result of batchResults) {
+      if (result.status === "rejected") {
+        console.error("[capture] chunk AI failed:", result.reason);
+        continue;
+      }
+      const { noteId, chunkAi, folderName, index: i, chunk } = result.value;
+      createdNoteIds[i] = noteId;
+
+      const stepIdx = steps.findIndex((s) => s.id === `capture-chunk-${i + 1}`);
+      if (stepIdx >= 0) {
+        steps[stepIdx] = {
+          ...steps[stepIdx]!,
+          status: "done",
+          toolSummary: `chunkChars=${chunk.length}; noteId=${noteId}; folder=${folderName}; title=${chunkAi.title}`,
+        };
+      }
+      await flushCaptureJob(params.userId, captureJob.id, steps, "RUNNING");
+      await params.onProgress?.({
+        type: "chunk_created",
+        jobId: captureJob.id,
+        payload: { noteId, index: i + 1, total: chunks.length, createdNotes: createdNoteIds.filter(Boolean).length },
+      });
+    }
+  }
+
+  const validNoteIds = createdNoteIds.filter((x): x is string => x !== null);
+  if (!validNoteIds.length) {
     throw new Error("未生成任何笔记（可能是正文为空或模型输出异常）");
   }
 
   const edgePairs: Array<{ fromNoteId: string; toNoteId: string }> = [];
-  for (let i = 0; i < createdNoteIds.length - 1; i += 1) {
-    edgePairs.push({ fromNoteId: createdNoteIds[i]!, toNoteId: createdNoteIds[i + 1]! });
+  for (let i = 0; i < validNoteIds.length - 1; i += 1) {
+    edgePairs.push({ fromNoteId: validNoteIds[i]!, toNoteId: validNoteIds[i + 1]! });
   }
   if (edgePairs.length) {
     await prisma.noteLink.createMany({
@@ -433,14 +473,39 @@ async function runCapturePipeline(params: {
     toolSummary: `edges=${edgePairs.length}; chunks=${chunks.length}; theme=${finalTheme}`,
   });
 
+  // 自动触发学习任务：为每篇生成笔记创建学习任务
+  const learnMode = params.mode ?? "lite";
+  const learningJobIds: string[] = [];
+  for (const nid of validNoteIds) {
+    const jobResult = await enqueueLearningJob({
+      userId: params.userId,
+      noteId: nid,
+      noteUpdatedAt: new Date(),
+      mode: learnMode,
+    });
+    if ("id" in jobResult) {
+      learningJobIds.push(jobResult.id);
+    }
+    // 内容过短的 chunk 静默跳过
+  }
+  await pushStep({
+    id: "capture-auto-enqueue",
+    phase: "done",
+    label: "自动触发学习任务",
+    status: "done",
+    at: nowIso(),
+    toolSummary: `enqueued=${learningJobIds.length}/${validNoteIds.length}; mode=${learnMode}`,
+  });
+
   await flushCaptureJob(params.userId, captureJob.id, steps, "SUCCEEDED", null);
   const result: CaptureResult = {
-    noteId: createdNoteIds[0]!,
+    noteId: validNoteIds[0]!,
     rawNoteId: "",
-    noteIds: createdNoteIds,
+    noteIds: validNoteIds,
     folder: { raw: "", theme: finalTheme },
     edges: edgePairs,
     jobId: captureJob.id,
+    learningJobIds,
   };
   await params.onProgress?.({
     type: "completed",
@@ -456,18 +521,19 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "未登录" }, { status: 401 });
   }
 
-  const body = (await req.json().catch(() => null)) as { input?: string } | null;
+  const body = (await req.json().catch(() => null)) as { input?: string; mode?: string } | null;
   const input = body?.input?.trim();
   if (!input) {
     return NextResponse.json({ error: "缺少 input" }, { status: 400 });
   }
+  const mode = body?.mode === "deep" ? "deep" : "lite";
   const wantsStream =
     (req.headers.get("accept") || "").includes("text/event-stream") ||
     new URL(req.url).searchParams.get("stream") === "1";
 
   try {
     if (!wantsStream) {
-      const result = await runCapturePipeline({ userId: user.id, input });
+      const result = await runCapturePipeline({ userId: user.id, input, mode });
       return NextResponse.json(result);
     }
 
@@ -482,6 +548,7 @@ export async function POST(req: Request) {
           const result = await runCapturePipeline({
             userId: user.id,
             input,
+            mode,
             onProgress: async (e) => {
               send(e.type, { jobId: e.jobId, ...e.payload });
             },

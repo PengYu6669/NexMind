@@ -6,6 +6,43 @@ import { MIN_NOTE_PLAIN_CHARS_FOR_LEARNING } from "@/lib/learning-jobs-runner";
 import { prisma } from "@/lib/prisma";
 
 /**
+ * 创建学习任务 DB 记录并触发队列处理（内部函数，不涉及 HTTP 响应）。
+ * 笔记必须存在且正文长度足够，否则返回错误信息。
+ */
+export async function enqueueLearningJob(params: {
+  userId: string;
+  noteId: string;
+  noteUpdatedAt: Date;
+  mode: "lite" | "deep";
+}): Promise<{ id: string } | { error: string; code: string }> {
+  const note = await prisma.note.findFirst({
+    where: { id: params.noteId, userId: params.userId },
+    select: { id: true, content: true },
+  });
+  if (!note) {
+    return { error: "笔记不存在", code: "NOTE_NOT_FOUND" };
+  }
+  const plainLen = (note.content ?? "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().length;
+  if (plainLen < MIN_NOTE_PLAIN_CHARS_FOR_LEARNING) {
+    return { error: `内容过短（需至少 ${MIN_NOTE_PLAIN_CHARS_FOR_LEARNING} 字）`, code: "CONTENT_TOO_SHORT" };
+  }
+  const job = await prisma.learningJob.create({
+    data: {
+      userId: params.userId,
+      noteId: params.noteId,
+      type: params.mode === "deep" ? "NOTE_LEARN_DEEP" : "NOTE_LEARN_LITE",
+      status: "PENDING",
+      priority: params.mode === "deep" ? 10 : 1,
+      runAt: new Date(),
+      noteUpdatedAt: params.noteUpdatedAt,
+    },
+    select: { id: true },
+  });
+  scheduleLearningJobsProcessing("capture-auto-enqueue");
+  return job;
+}
+
+/**
  * 手动触发笔记学习入队（轻量 / 深度）。
  * 笔记必须属于当前用户，且正文长度足够。
  */

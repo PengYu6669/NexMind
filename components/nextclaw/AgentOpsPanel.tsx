@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Bot, CheckCircle2, Clock3, Loader2, XCircle } from "lucide-react";
+import { Bot, CheckCircle2, ChevronDown, ChevronUp, Clock3, Loader2, XCircle } from "lucide-react";
 import {
   forceCenter,
   forceCollide,
@@ -108,6 +108,7 @@ export function AgentOpsPanel({
   const rafRef = useRef<number | null>(null);
   const [tick, setTick] = useState(0);
   const [hoverNodeId, setHoverNodeId] = useState<string | null>(null);
+  const [collapsed, setCollapsed] = useState(false);
 
   const activeJob = useMemo(() => {
     if (!jobs.length) return null;
@@ -343,28 +344,41 @@ export function AgentOpsPanel({
   };
 
   return (
-    <section className="flex h-full min-h-0 flex-col overflow-hidden">
-      <div className="shrink-0 border-b border-outline-variant/10 px-5 py-5">
+    <section className={`flex min-h-0 flex-col overflow-hidden transition-all duration-200 ${collapsed ? "min-h-[52px]" : "h-full"}`}>
+      <div className="shrink-0 border-b border-outline-variant/10 px-4 py-3">
         <div className="flex items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-2">
             <Bot className="h-4 w-4 text-primary" />
             <h2 className="truncate font-headline text-sm font-black tracking-tight text-on-surface">知识摄取预览</h2>
           </div>
-          <span className="rounded-md border border-outline-variant/20 bg-surface-container-low/40 px-2 py-0.5 text-[11px] font-bold text-on-surface-variant">
-            队列 {pendingJobs}
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="rounded-md border border-outline-variant/20 bg-surface-container-low/40 px-2 py-0.5 text-[11px] font-bold text-on-surface-variant">
+              队列 {pendingJobs}
+            </span>
+            <button
+              type="button"
+              onClick={() => setCollapsed((c) => !c)}
+              className="shrink-0 rounded-lg border border-outline-variant/15 p-1 text-on-surface-variant hover:bg-surface-container-low"
+              aria-label={collapsed ? "展开" : "收起"}
+            >
+              {collapsed ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronUp className="h-3.5 w-3.5" />}
+            </button>
+          </div>
         </div>
-        <p className="mt-1 text-xs text-on-surface-variant">从来源到主题拆分再到笔记连线，实时预览知识图谱成形过程</p>
+        {collapsed ? null : (
+          <p className="mt-1 text-xs text-on-surface-variant">从来源到主题拆分再到笔记连线，实时预览知识图谱成形过程</p>
+        )}
       </div>
 
+      {collapsed ? null : (
       <div className="no-scrollbar min-h-0 flex-1 overflow-y-auto px-4 py-3">
         {loading ? (
           <div className="rounded-xl border border-outline-variant/15 bg-surface-container-low/20 px-3 py-4 text-center text-xs text-on-surface-variant">
             正在加载 Agent 任务…
           </div>
-        ) : jobs.length === 0 ? (
-          <div className="rounded-xl border border-outline-variant/15 bg-surface-container-low/20 px-3 py-4 text-center text-xs text-on-surface-variant">
-            当前没有运行中的 Agent 任务
+        ) : !jobs.length ? (
+          <div className="min-h-[60px] rounded-xl border border-outline-variant/15 bg-surface-container-low/20 px-3 py-2.5 text-center text-xs text-on-surface-variant flex items-center justify-center">
+            暂无待处理链接
           </div>
         ) : null}
 
@@ -402,7 +416,7 @@ export function AgentOpsPanel({
                 </span>
               </div>
 
-              <div ref={hostRef} className="h-[100%] min-h-[380px] overflow-hidden rounded-lg border border-outline-variant/12 bg-[#040713]">
+              <div ref={hostRef} className="h-full min-h-[160px] max-h-[60vh] overflow-hidden rounded-lg border border-outline-variant/12 bg-[#040713]">
                 <svg
                   width={viewport.width}
                   height={viewport.height}
@@ -515,6 +529,7 @@ export function AgentOpsPanel({
           </>
         ) : null}
       </div>
+      )}
     </section>
   );
 }

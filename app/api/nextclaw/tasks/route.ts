@@ -31,7 +31,7 @@ export async function GET() {
         return {
           id: j.id,
           noteId: j.noteId,
-          noteTitle: j.note?.title ?? "（无标题）",
+          noteTitle: j.title ?? j.note?.title ?? "（无标题）",
           type: j.type,
           status: j.status,
           attempts: j.attempts,

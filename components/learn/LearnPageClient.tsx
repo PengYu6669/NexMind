@@ -6,6 +6,7 @@ import { AppSidebar } from "@/components/layout/AppSidebar";
 import { AppTopBar } from "@/components/layout/AppTopBar";
 import Link from "next/link";
 import { Clock3, Loader2, MessageSquarePlus, Sparkles } from "lucide-react";
+import { marked } from "marked";
 
 type PendingReviewItem = {
   reviewItemId: string;
@@ -261,8 +262,8 @@ export function LearnPageClient() {
         <AppTopBar />
         <div className="flex min-h-0 flex-1 overflow-hidden pt-16 pb-8">
           <div className="flex min-h-0 w-full flex-col lg:flex-row">
-            <aside className="min-h-0 w-full overflow-hidden border-b border-outline-variant/10 lg:w-[30%] lg:max-w-[420px] lg:border-b-0 lg:border-r">
-              <div className="min-h-0 overflow-y-auto px-4 py-3">
+            <aside className="flex min-h-0 w-full flex-col overflow-hidden border-b border-outline-variant/10 lg:w-[30%] lg:max-w-[420px] lg:border-b-0 lg:border-r">
+              <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
                 {loading ? (
                   <div className="rounded-xl border border-outline-variant/15 bg-surface-container-low/20 px-3 py-4 text-center text-xs text-on-surface-variant">
                     <Loader2 className="mx-auto mb-2 h-4 w-4 animate-spin" />
@@ -283,12 +284,18 @@ export function LearnPageClient() {
                           const isActive = selected?.kind === "review" && selected.reviewItemId === r.reviewItemId;
                           const tag = easeTag(r.easeFactor);
                           const score = aiByReviewId[r.reviewItemId]?.lastScore ?? r.lastScore;
+                          const priorityBorder =
+                            r.easeFactor < 2.0
+                              ? "border-l-error/40"
+                              : r.easeFactor < 3.0
+                                ? "border-l-amber-500/30"
+                                : "border-l-emerald-500/25";
                           return (
                             <button
                               key={r.reviewItemId}
                               type="button"
                               onClick={() => setSelected({ kind: "review", reviewItemId: r.reviewItemId })}
-                              className={`w-full rounded-xl border p-3 text-left transition-colors ${
+                              className={`w-full rounded-xl border p-3 text-left transition-colors border-l-4 ${priorityBorder} ${
                                 isActive
                                   ? "border-primary/35 bg-primary/10"
                                   : "border-outline-variant/15 hover:border-primary/20 bg-surface-container-low/20"
@@ -319,29 +326,31 @@ export function LearnPageClient() {
                       icon={<Sparkles className="h-3.5 w-3.5" />}
                       emptyText="暂无今日新卡片"
                     >
-                      <div className="space-y-2">
-                        {data.todayCards.slice(0, 8).map((c) => {
+                      <div className="grid grid-cols-2 gap-1.5">
+                        {data.todayCards.slice(0, 10).map((c) => {
                           const isActive = selected?.kind === "card" && selected.cardId === c.cardId;
                           return (
                             <button
                               key={c.cardId}
                               type="button"
                               onClick={() => setSelected({ kind: "card", cardId: c.cardId })}
-                              className={`w-full rounded-xl border p-3 text-left transition-colors ${
+                              className={`w-full rounded-xl border p-2.5 text-left transition-colors ${
                                 isActive
                                   ? "border-primary/35 bg-primary/10"
                                   : "border-outline-variant/15 hover:border-primary/20 bg-surface-container-low/20"
                               }`}
                             >
-                              <div className="flex items-start justify-between gap-2">
+                              <div className="flex flex-col gap-1.5">
                                 <div className="min-w-0">
-                                  <div className="truncate text-xs font-bold text-on-surface">{c.title}</div>
-                                  <div className="mt-1 text-[10px] text-on-surface-variant line-clamp-2">{c.summary}</div>
-                                  <div className="mt-1 text-[10px] font-bold text-outline/70 truncate">{c.noteTitle}</div>
+                                  <div className="truncate text-[11px] font-black text-on-surface">{c.title}</div>
+                                  <div className="mt-0.5 text-[10px] text-on-surface-variant line-clamp-2 leading-snug">{c.summary}</div>
                                 </div>
-                                  <span className="shrink-0 rounded-md border border-outline-variant/20 bg-surface-container-high/30 px-2 py-0.5 text-[10px] font-bold text-on-surface-variant">
-                                  {cardTypeLabel(c.dbType)}
-                                </span>
+                                <div className="flex items-center justify-between gap-1">
+                                  <span className="truncate text-[9px] text-outline/60">{c.noteTitle}</span>
+                                  <span className="shrink-0 rounded-md border border-outline-variant/15 bg-surface-container-high/20 px-1.5 py-0.5 text-[9px] font-semibold text-outline/70">
+                                    {cardTypeLabel(c.dbType)}
+                                  </span>
+                                </div>
                               </div>
                             </button>
                           );
@@ -386,8 +395,8 @@ export function LearnPageClient() {
               </div>
             </aside>
 
-            <main className="min-h-0 flex-1 overflow-hidden">
-              <div className="min-h-0 overflow-y-auto px-5 py-4">
+            <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
+              <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
                 {!data || loading ? (
                   <div className="text-xs text-on-surface-variant">正在加载…</div>
                 ) : !selected ? (
@@ -428,6 +437,24 @@ export function LearnPageClient() {
         </div>
       </div>
     </div>
+  );
+}
+
+/** 将 Markdown 渲染为安全 HTML，替代 <pre> 防止内容截断/标题丢失 */
+function MarkdownContent({ content, className }: { content: string; className?: string }) {
+  const html = useMemo(() => {
+    if (!content) return "";
+    try {
+      return marked.parse(content, { async: false }) as string;
+    } catch {
+      return content.replace(/\n/g, "<br/>");
+    }
+  }, [content]);
+  return (
+    <div
+      className={`prose prose-sm max-w-none text-xs leading-relaxed [&_h1]:text-sm [&_h1]:font-black [&_h2]:text-xs [&_h2]:font-black [&_h2]:mt-3 [&_h2]:mb-1.5 [&_h3]:text-[11px] [&_h3]:font-bold [&_h3]:mt-2 [&_h3]:mb-1 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:list-decimal [&_ol]:pl-4 [&_li]:mt-0.5 [&_p]:mt-1 [&_p]:mb-1 [&_code]:bg-surface-container-high/40 [&_code]:px-1 [&_code]:rounded [&_code]:text-[10px] ${className ?? ""}`}
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
   );
 }
 
@@ -606,9 +633,9 @@ function ReviewRightPanel({
         <summary className="cursor-pointer text-xs font-black text-on-surface-variant">
           查看完整复习卡
         </summary>
-        <pre className="mt-2 whitespace-pre-wrap rounded-xl border border-outline-variant/10 bg-surface-container-lowest/30 px-3 py-2 text-[11px] leading-relaxed text-on-surface/90">
-          {item.reviewCardContentMd || item.reviewCardTitle || "（暂无内容）"}
-        </pre>
+        <div className="mt-2 rounded-xl border border-outline-variant/10 bg-surface-container-lowest/30 px-3 py-2">
+          <MarkdownContent content={item.reviewCardContentMd || item.reviewCardTitle || "（暂无内容）"} />
+        </div>
       </details>
 
       {ai ? (
@@ -713,9 +740,9 @@ function CardRightPanel({ card }: { card: TodayCard }) {
 
       <details className="rounded-2xl border border-outline-variant/10 bg-surface-container-lowest/20 p-4">
         <summary className="cursor-pointer text-xs font-black text-on-surface-variant">查看完整卡片</summary>
-        <pre className="mt-2 whitespace-pre-wrap rounded-xl border border-outline-variant/10 bg-surface-container-lowest/30 px-3 py-2 text-[11px] leading-relaxed text-on-surface/90">
-          {card.contentMd || card.contentMdPreview || card.summary || "（暂无内容）"}
-        </pre>
+        <div className="mt-2 rounded-xl border border-outline-variant/10 bg-surface-container-lowest/30 px-3 py-2">
+          <MarkdownContent content={card.contentMd || card.contentMdPreview || card.summary || "（暂无内容）"} />
+        </div>
       </details>
 
       <div className="rounded-2xl border border-outline-variant/10 bg-surface-container-lowest/20 p-4 text-[11px] text-on-surface-variant">

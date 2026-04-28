@@ -226,12 +226,22 @@ export function stripHtmlToText(html: string): string {
     .trim();
 }
 
+let ragSchemaPromise: Promise<void> | null = null;
+
 export async function ensureRagSchema(): Promise<void> {
+  if (ragSchemaPromise) return ragSchemaPromise;
+  ragSchemaPromise = runEnsureRagSchema().catch((e) => {
+    ragSchemaPromise = null;
+    throw e;
+  });
+  return ragSchemaPromise;
+}
+
+async function runEnsureRagSchema(): Promise<void> {
   const dim = getExpectedEmbeddingDim();
   if (!Number.isInteger(dim)) {
     throw new Error("AI_EMBEDDING_DIMENSION 必须为整数");
   }
-
   await prisma.$executeRawUnsafe(`CREATE EXTENSION IF NOT EXISTS vector;`);
 
   await prisma.$executeRawUnsafe(`

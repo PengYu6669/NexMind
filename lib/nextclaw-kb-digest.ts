@@ -10,7 +10,7 @@ export function buildKbDigestFromRelated(params: {
   snippetChars?: number;
 }): string {
   const maxNotes = params.maxNotes ?? 5;
-  const snippetChars = params.snippetChars ?? 320;
+  const snippetChars = params.snippetChars ?? 200;
   const lines = params.relatedNotes.slice(0, maxNotes).map((n, i) => {
     const plain = stripHtmlToText(n.snippet).replace(/\s+/g, " ").trim();
     const cut = plain.slice(0, snippetChars);

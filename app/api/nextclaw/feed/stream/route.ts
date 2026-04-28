@@ -19,6 +19,7 @@ async function buildActiveJobsPayload(userId: string) {
       id: true,
       status: true,
       type: true,
+      title: true,
       steps: true,
       note: { select: { title: true } },
     },
@@ -28,7 +29,7 @@ async function buildActiveJobsPayload(userId: string) {
     id: j.id,
     status: j.status,
     type: j.type,
-    noteTitle: j.note?.title ?? "（无标题）",
+    noteTitle: j.title ?? j.note?.title ?? "（无标题）",
     ui: buildTaskUiPayload({ status: j.status, steps: j.steps }),
   }));
 
@@ -135,7 +136,6 @@ export async function GET(req: Request) {
       });
 
       // 客户端断开时清理
-      // @ts-expect-error - TS doesn't know about req.signal in this context
       req.signal?.addEventListener?.("abort", () => {
         clearInterval(heartbeat);
         unsubscribe();

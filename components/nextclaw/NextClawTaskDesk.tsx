@@ -158,7 +158,7 @@ export function NextClawTaskDesk({
           method: "POST",
           credentials: "include",
           headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
-          body: JSON.stringify({ input }),
+          body: JSON.stringify({ input, mode: learnMode }),
         });
         if (!captureRes.ok || !captureRes.body) {
           const captureData = (await captureRes.json().catch(() => null)) as { noteId?: string; error?: string } | null;
@@ -206,7 +206,11 @@ export function NextClawTaskDesk({
           }
         }
         if (!finalNoteId) throw new Error("提取完成但未返回 noteId");
-        targetNoteId = finalNoteId;
+        // Capture pipeline 已在服务端自动触发学习任务，无需手动 POST
+        setCaptureInput("");
+        await refresh();
+        onTasksChanged?.();
+        return;
       } else if (!targetNoteId) {
         throw new Error("请选择一个笔记");
       }
@@ -220,7 +224,6 @@ export function NextClawTaskDesk({
       const taskData = (await taskRes.json().catch(() => null)) as { error?: string } | null;
       if (!taskRes.ok) throw new Error(taskData?.error || "发布任务失败");
 
-      if (createMode === "capture") setCaptureInput("");
       await refresh();
       onTasksChanged?.();
     } catch (e) {

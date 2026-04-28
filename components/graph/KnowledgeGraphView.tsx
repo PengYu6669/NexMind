@@ -353,6 +353,14 @@ export function KnowledgeGraphView() {
     }
   };
 
+  // 每次渲染预构建节点索引与边类型标签（避免在 JSX map 中重复 O(N) 查找）
+  const nodeIdx = useMemo(() => {
+    const m = new Map<string, RenderNode>();
+    for (const n of graphData.nodes) m.set(n.id, n);
+    return m;
+  }, [graphData.nodes]);
+  const edgeKindLabel: Record<string, string> = { LINK: "引用", DERIVED_FROM: "衍生", PRODUCES: "生成", CONFLICT_HINT: "冲突" };
+
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col bg-surface">
       <header className="flex shrink-0 items-start justify-between gap-3 border-b border-outline-variant/10 bg-surface-container-low/25 px-5 py-4 backdrop-blur-sm">
@@ -455,10 +463,11 @@ export function KnowledgeGraphView() {
               </defs>
               <rect x={0} y={0} width={viewport.width} height={viewport.height} fill="rgba(4,7,19,0.98)" />
               {graphData.links.map((l) => {
-                const sid = String(typeof l.source === "string" ? l.source : l.source.id);
-                const tid = String(typeof l.target === "string" ? l.target : l.target.id);
-                const s = graphData.nodes.find((n) => n.id === sid);
-                const t = graphData.nodes.find((n) => n.id === tid);
+                const l2 = l as unknown as RenderEdge;
+                const sid = String(typeof l2.source === "object" ? (l2.source as RenderNode).id : l2.source);
+                const tid = String(typeof l2.target === "object" ? (l2.target as RenderNode).id : l2.target);
+                const s = nodeIdx.get(sid);
+                const t = nodeIdx.get(tid);
                 if (!s || !t) return null;
                 const ps = toScreen(s.x ?? 0, s.y ?? 0);
                 const pt = toScreen(t.x ?? 0, t.y ?? 0);
@@ -468,15 +477,29 @@ export function KnowledgeGraphView() {
                 const dy = pt.y - ps.y;
                 const curve = Math.min(24, Math.max(-24, (dx + dy) * 0.03));
                 const hover = hoverNodeId && (hoverNodeId === sid || hoverNodeId === tid);
+                const kindLabel = edgeKindLabel[l2.kind ?? ""] ?? "";
                 return (
-                  <path
-                    key={`${sid}=>${tid}`}
-                    d={`M ${ps.x} ${ps.y} Q ${mx + curve} ${my - curve} ${pt.x} ${pt.y}`}
-                    fill="none"
-                    stroke={hover ? "rgba(236,72,153,0.92)" : "rgba(196,142,255,0.45)"}
-                    strokeWidth={hover ? 2.2 : 1.4}
-                    opacity={1}
-                  />
+                  <g key={`${sid}=>${tid}`}>
+                    <path
+                      d={`M ${ps.x} ${ps.y} Q ${mx + curve} ${my - curve} ${pt.x} ${pt.y}`}
+                      fill="none"
+                      stroke={hover ? "rgba(236,72,153,0.92)" : "rgba(196,142,255,0.45)"}
+                      strokeWidth={hover ? 2.2 : 1.4}
+                      opacity={hover ? 1 : 0.7}
+                    />
+                    {kindLabel && hover ? (
+                      <text
+                        x={mx + curve * 1.4}
+                        y={my - curve * 1.4 - 4}
+                        textAnchor="middle"
+                        fill="rgba(236,72,153,0.85)"
+                        fontSize={9}
+                        fontWeight={600}
+                      >
+                        {kindLabel}
+                      </text>
+                    ) : null}
+                  </g>
                 );
               })}
               {graphData.nodes.map((n) => {
@@ -503,6 +526,7 @@ export function KnowledgeGraphView() {
                     }}
                     style={{ cursor: "pointer" }}
                   >
+                    <title>{n.title}</title>
                     <circle
                       cx={p.x}
                       cy={p.y}
@@ -521,7 +545,7 @@ export function KnowledgeGraphView() {
                       fontSize={11}
                       fontWeight={n.kind === "source" ? 700 : 500}
                     >
-                      {(n.title || "").slice(0, 18)}
+                      {n.title ? (n.title.length > 12 ? n.title.slice(0, 11) + "…" : n.title) : ""}
                     </text>
                   </g>
                 );

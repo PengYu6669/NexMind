@@ -521,17 +521,19 @@ export function IntelligenceFeed({
           </div>
         ) : null}
 
-        <div className="shrink-0 rounded-2xl border border-outline-variant/12 bg-surface-container-low/20 p-2">
-          <div className="h-[62vh] min-h-[560px] overflow-hidden rounded-xl">
-            <AgentOpsPanel
-              loading={loading}
-              jobs={Array.isArray(graphJobs) ? graphJobs : []}
-              pendingJobs={typeof pendingJobs === "number" ? pendingJobs : 0}
-              selectedJobId={selectedAgentJobId}
-              onSelectJob={onSelectAgentJob}
-            />
+        {(graphJobs?.length ?? 0) > 0 || (pendingJobs ?? 0) > 0 ? (
+          <div className="shrink-0 rounded-2xl border border-outline-variant/12 bg-surface-container-low/20 p-2">
+            <div className="h-[62vh] min-h-[560px] overflow-hidden rounded-xl">
+              <AgentOpsPanel
+                loading={loading}
+                jobs={Array.isArray(graphJobs) ? graphJobs : []}
+                pendingJobs={typeof pendingJobs === "number" ? pendingJobs : 0}
+                selectedJobId={selectedAgentJobId}
+                onSelectJob={onSelectAgentJob}
+              />
+            </div>
           </div>
-        </div>
+        ) : null}
 
         {loading || cards === null ? (
           <div className="shrink-0 rounded-2xl border border-outline-variant/15 bg-surface-container-lowest/30 px-4 py-3 text-center text-xs text-on-surface-variant">
@@ -552,7 +554,7 @@ export function IntelligenceFeed({
         ) : null}
 
         {localCards.length > 0 ? (
-        <div className="no-scrollbar shrink-0 max-h-[18vh] space-y-2 overflow-y-auto">
+        <div className="shrink-0 space-y-2">
           {filteredData.map((c) => {
           const open = !!askOpen[c.id];
           const isExpanded = !!expanded[c.id];

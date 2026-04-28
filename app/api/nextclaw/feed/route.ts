@@ -37,6 +37,7 @@ export async function GET(req: Request) {
         id: true,
         status: true,
         type: true,
+        title: true,
         steps: true,
         note: { select: { title: true } },
       },
@@ -45,7 +46,7 @@ export async function GET(req: Request) {
       id: j.id,
       status: j.status,
       type: j.type,
-      noteTitle: j.note?.title ?? "（无标题）",
+      noteTitle: j.title ?? j.note?.title ?? "（无标题）",
       ui: buildTaskUiPayload({ status: j.status, steps: j.steps }),
     }));
     const noteIds = Array.from(

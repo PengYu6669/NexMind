@@ -1,4 +1,5 @@
 import { callDashscopeChatCompletion, extractJsonFromText } from "@/lib/doubao";
+import { runNextClawSkill } from "@/lib/nextclaw-skills";
 
 export type AutonomousDecision = {
   needSearch: boolean;
@@ -109,6 +110,39 @@ export async function decideNeedWebSearch(params: {
     };
   }
   return d;
+}
+
+/**
+ * 启发式 URL 筛选（替代 LLM-based pickBestFromWebResults）。
+ * 基于 source_trust 对结果打分，选取最高分 URL。
+ * 避免额外 LLM 调用，秒级提速。
+ */
+export function pickBestByHeuristic(
+  results: { title?: string; url?: string; description?: string }[],
+): { selectedUrl: string; selectedTitle?: string; announce: string } {
+  const valid = results.filter((r) => r.url && /^https?:\/\//.test(r.url));
+  if (!valid.length) {
+    return { selectedUrl: "", announce: "无可用来源链接" };
+  }
+
+  // 按 source_trust 得分排序
+  const scored = valid.map((r) => {
+    const trust = runNextClawSkill("source_trust", {
+      url: r.url ?? "",
+      title: r.title ?? "",
+      snippet: r.description ?? "",
+      markdown: "",
+    });
+    return { ...r, score: trust.score, level: trust.level };
+  });
+  scored.sort((a, b) => b.score - a.score);
+
+  const best = scored[0]!;
+  return {
+    selectedUrl: best.url ?? "",
+    selectedTitle: best.title,
+    announce: `来源评估后优先分析「${best.title || best.url}」`,
+  };
 }
 
 export async function pickBestFromWebResults(params: {

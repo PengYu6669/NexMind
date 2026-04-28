@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppSidebar } from "@/components/layout/AppSidebar";
 import { AppTopBar } from "@/components/layout/AppTopBar";
 import { NextClawCommandBar } from "@/components/nextclaw/NextClawCommandBar";
@@ -130,6 +130,9 @@ export function NextClawPageClient() {
     void bootstrap();
   }, [bootstrap]);
 
+  const refreshFeedRef = useRef(refreshFeed);
+  refreshFeedRef.current = refreshFeed;
+
   useEffect(() => {
     // 用 SSE 替代轮询：实时推送 activeJobs/pendingJobs，避免整包刷新导致卡顿
     let cancelled = false;
@@ -178,6 +181,8 @@ export function NextClawPageClient() {
               if (!cancelled) {
                 setActiveAgentJobs(jobs);
                 setPendingJobs(typeof payload?.pendingJobs === "number" ? payload.pendingJobs : 0);
+                // 任务状态变更时同步刷新学习卡片
+                refreshFeedRef.current().catch(() => {});
               }
             }
           }

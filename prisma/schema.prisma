@@ -148,6 +148,9 @@ model LearningJob {
   noteId    String?
   note      Note?             @relation(fields: [noteId], references: [id], onDelete: Cascade)
 
+  /** 任务显示标题（capture 等无 noteId 的场景使用） */
+  title     String?
+
   type      LearningJobType
   status    LearningJobStatus @default(PENDING)
   priority  Int               @default(0)

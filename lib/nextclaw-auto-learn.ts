@@ -65,11 +65,11 @@ export async function generateNextClawAutoLearnLite(params: {
     "Doubao-Seed-2.0-lite";
 
   const deep = params.mode === "deep";
-  const noteText = stripHtmlToText(params.noteHtml).slice(0, deep ? 12000 : 8000);
+  const noteText = stripHtmlToText(params.noteHtml).slice(0, deep ? 5000 : 3500);
   const related = params.relatedNotes.slice(0, deep ? 8 : 5).map((n) => ({
     noteId: n.noteId,
     title: n.title,
-    snippet: (n.snippet || "").slice(0, 800),
+    snippet: (n.snippet || "").slice(0, 500),
     distance: n.distance ?? null,
   }));
 

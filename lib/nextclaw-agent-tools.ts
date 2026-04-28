@@ -121,7 +121,7 @@ async function mcpFetchUrl(ctx: ExecuteToolContext): Promise<ExecuteToolResult |
     const r = await callNextClawKnowledgeTool(NEXTCLAW_MCP_TOOL_FETCH_URL, {
       url,
       timeoutMs: 20000,
-      maxChars: 60000,
+      maxChars: 25000,
     });
     if (r.isError || !r.ok) {
       return { ok: false, summary: `fetch_url（MCP）：${r.text.slice(0, 240)}${r.text.length > 240 ? "…" : ""}` };

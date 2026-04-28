@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 const JOB_LIST_SELECT_FULL = {
   id: true,
   noteId: true,
+  title: true,
   type: true,
   status: true,
   attempts: true,
@@ -20,6 +21,7 @@ const JOB_LIST_SELECT_FULL = {
 const JOB_LIST_SELECT_LEGACY = {
   id: true,
   noteId: true,
+  title: true,
   type: true,
   status: true,
   attempts: true,
@@ -34,6 +36,7 @@ const JOB_LIST_SELECT_LEGACY = {
 export type LearningJobListRow = {
   id: string;
   noteId: string | null;
+  title: string | null;
   type: import("@prisma/client").LearningJobType;
   status: import("@prisma/client").LearningJobStatus;
   attempts: number;

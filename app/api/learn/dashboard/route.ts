@@ -120,6 +120,7 @@ export async function GET() {
         id: true,
         type: true,
         noteId: true,
+        title: true,
         status: true,
         runAt: true,
         steps: true,
@@ -203,7 +204,7 @@ export async function GET() {
     return {
       jobId: j.id,
       type: j.type,
-      noteTitle: j.note?.title ?? "（无标题）",
+      noteTitle: j.title ?? j.note?.title ?? "（无标题）",
       progress: p.progress,
       currentStepLabel: p.currentStepLabel,
     };

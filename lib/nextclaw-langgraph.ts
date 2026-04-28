@@ -8,8 +8,9 @@ import { ragSearch, stripHtmlToText } from "@/lib/rag";
 import { buildKbDigestFromRelated } from "@/lib/nextclaw-kb-digest";
 import { auditorAgent, plannerAgent, coachAgent, retrieverAgent, roleLabel } from "@/lib/nextclaw-multi-agent";
 import type { LearningJobStepRecord } from "@/lib/nextclaw-agent-types";
+import type { NextClawAutoLearnLiteCard } from "@/lib/nextclaw-auto-learn";
 import { executeTool } from "@/lib/nextclaw-agent-tools";
-import { decideNeedWebSearch, pickBestFromWebResults } from "@/lib/nextclaw-autonomous-loop";
+import { decideNeedWebSearch, pickBestByHeuristic } from "@/lib/nextclaw-autonomous-loop";
 import { policyOf } from "@/lib/nextclaw-orchestrator-policy";
 import {
   createExecutionMetrics,
@@ -35,6 +36,7 @@ export type NextClawLangGraphState = {
   noteTitle: string | undefined;
   noteHtml: string | undefined;
   noteText: string | undefined;
+  noteSourceType: string | undefined;
 
   relatedNotes: RelatedNote[] | undefined;
   relatedLines: string[] | undefined;
@@ -211,6 +213,7 @@ function buildNextClawGraph() {
     noteTitle: z.string().optional(),
     noteHtml: z.string().optional(),
     noteText: z.string().optional(),
+    noteSourceType: z.string().optional(),
 
     relatedNotes: z.any().optional(),
     relatedLines: z.any().optional(),
@@ -283,7 +286,7 @@ function buildNextClawGraph() {
 
     const note = await prisma.note.findFirst({
       where: { id: job.noteId, userId: state.userId },
-      select: { id: true, title: true, content: true, updatedAt: true, archived: true },
+      select: { id: true, title: true, content: true, updatedAt: true, archived: true, sourceType: true },
     });
     if (!note || note.archived) throw new Error("笔记不存在或已归档");
     if (job.noteUpdatedAt && note.updatedAt.getTime() > job.noteUpdatedAt.getTime()) {
@@ -326,6 +329,7 @@ function buildNextClawGraph() {
       noteTitle: note.title,
       noteHtml: note.content,
       noteText,
+      noteSourceType: note.sourceType ?? undefined,
       relatedNotes,
       relatedLines,
       kbDigest,
@@ -335,6 +339,22 @@ function buildNextClawGraph() {
     .addNode("auto_reason", async (state) => {
       await ensureNotInterrupted(state.jobId);
       if (isDone(state.steps, "auto-reason")) return state;
+
+      // capture 来源笔记正文已完整，无需联网搜索
+      if (state.noteSourceType === "capture") {
+        const s: LearningJobStepRecord = {
+          id: "auto-reason",
+          phase: "think",
+          label: "判断是否需要联网补充来源（Autonomous Reasoning）",
+          status: "done",
+          at: nowIso(),
+          toolSummary: "无需搜索：capture 笔记正文已完整",
+        };
+        let next = pushStep(state, s);
+        await flushSteps(next.jobId, next.steps!);
+        return { ...next, autoDecision: { needSearch: false, reason: "capture 笔记正文已完整" } };
+      }
+
       const s: LearningJobStepRecord = {
         id: "auto-reason",
         phase: "think",
@@ -483,10 +503,9 @@ function buildNextClawGraph() {
         };
       }
 
-      const query = state.autoWebSearchResults?.query ?? state.autoDecision?.query ?? "";
       const results = state.autoWebSearchResults?.results ?? [];
-      const pick = await pickBestFromWebResults({ query, results });
-      const picked = results.find((x) => (x.url ?? "").trim() === (pick.selectedUrl ?? "").trim());
+      const pick = pickBestByHeuristic(results);
+      const picked = results.find((x: { url?: string }) => (x.url ?? "").trim() === (pick.selectedUrl ?? "").trim());
       const trust = runNextClawSkill("source_trust", {
         url: pick.selectedUrl,
         title: picked?.title ?? pick.selectedTitle ?? "",
@@ -591,7 +610,7 @@ function buildNextClawGraph() {
       const localAudit = runNextClawSkill("conflict_audit", {
         noteText: state.noteText ?? "",
         fetchedMarkdown: state.autoFetched?.markdown ?? "",
-        relatedNotes: (state.relatedNotes ?? []).map((n) => ({
+        relatedNotes: (state.relatedNotes ?? []).map((n: RelatedNote) => ({
           noteId: n.noteId,
           title: n.title,
           snippet: n.snippet ?? "",
@@ -636,6 +655,24 @@ function buildNextClawGraph() {
     .addNode("planner_node", async (state) => {
     await ensureNotInterrupted(state.jobId);
     if (isDone(state.steps, "plan")) return state;
+
+    // capture 来源笔记直接使用合成计划，跳过 AI 规划
+    if (state.noteSourceType === "capture") {
+      const fallbackPlan = { steps: [{ id: "s1", title: "基于已有上下文生成学习卡片与复习要点", tool: "synthesize" }] };
+      const s: LearningJobStepRecord = {
+        id: "plan",
+        phase: "think",
+        label: `${roleLabel("planner")}：生成 JSON 执行计划（Plan-Based）`,
+        status: "done",
+        at: nowIso(),
+        toolSummary: "capture 笔记正文已完整，跳过规划步骤",
+      };
+      const roleStats = state.roleStats ?? { planner: 0, retriever: 0, auditor: 0, coach: 0, scheduler: 0 };
+      roleStats.planner += 1;
+      let next = pushStep(state, s);
+      await flushSteps(next.jobId, next.steps!, { plan: fallbackPlan as any });
+      return { ...next, plan: fallbackPlan, roleStats, metrics: state.metrics ?? next.metrics, toolTraceLines: state.toolTraceLines ?? next.toolTraceLines };
+    }
 
     const s: LearningJobStepRecord = {
       id: "plan",
@@ -808,6 +845,23 @@ function buildNextClawGraph() {
 
         const role = tool === "audit_content" ? "auditor" : "retriever";
 
+        // capture 来源的笔记已包含完整正文，跳过重复 fetch_url
+        if (tool === "fetch_url" && state.noteSourceType === "capture" && (state.noteText?.length ?? 0) >= 2000) {
+          next.steps = next.steps ?? [];
+          next.steps.push({
+            id: ps.id,
+            phase: "done",
+            label: `${ps.title}（capture 笔记已含正文，跳过）`,
+            status: "done",
+            toolName: "fetch_url",
+            at: nowIso(),
+            toolSummary: "笔记来源为 capture，正文已存在，无需重复抓取",
+          });
+          await flushSteps(next.jobId, next.steps);
+          skipped += 1;
+          continue;
+        }
+
         // HITL：若计划执行遇到 fetch_url 但仍然没有可用 url，则进入等待用户提供来源
         if (tool === "fetch_url" && typeof (toolInput as any)?.url === "string" && !(toolInput as any).url.trim()) {
           next = updateLastStep(next, {
@@ -910,8 +964,10 @@ function buildNextClawGraph() {
       ].join("\n");
       const hasReviewSection = /自测问题|参考答案要点/.test(c.contentMd ?? "");
       cards[i] = {
-        ...c,
+        type: (c.type ?? "REVIEW") as NextClawAutoLearnLiteCard["type"],
+        title: c.title ?? "",
         contentMd: hasReviewSection ? (c.contentMd ?? "") : `${c.contentMd ?? ""}\n\n${addon}`.trim(),
+        sources: (c as any)?.sources,
       };
     }
 
@@ -1020,10 +1076,11 @@ function buildNextClawGraph() {
       where: { userId: state.userId, noteId: job.noteId, noteUpdatedAt: job.noteUpdatedAt ?? undefined },
     });
 
+    const cardNoteId = job.noteId!;
     await prisma.learningCard.createMany({
       data: cards.map((c: any) => ({
         userId: state.userId,
-        noteId: job.noteId,
+        noteId: cardNoteId,
         type: c.type,
         title: c.title,
         contentMd: c.contentMd,
@@ -1179,6 +1236,7 @@ export async function runNextClawLangGraphJob(params: {
           noteTitle: resumed.noteTitle,
           noteHtml: resumed.noteHtml,
           noteText: resumed.noteText,
+          noteSourceType: resumed.noteSourceType,
           relatedNotes: resumed.relatedNotes,
           relatedLines: resumed.relatedLines,
           kbDigest: resumed.kbDigest,
@@ -1237,6 +1295,7 @@ export async function runNextClawLangGraphJob(params: {
     noteTitle: undefined,
     noteHtml: undefined,
     noteText: undefined,
+    noteSourceType: undefined,
     relatedNotes: undefined,
     relatedLines: undefined,
     kbDigest: undefined,
