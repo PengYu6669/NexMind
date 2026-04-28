@@ -46,7 +46,7 @@ export async function DELETE(
     return NextResponse.json({ error: "文件夹不存在" }, { status: 404 });
   }
 
-  const r = await prisma.$transaction(async (tx) => {
+  const r = await prisma.$transaction(async (tx: any) => {
     const notesDeleted = await tx.note.deleteMany({
       where: { userId: user.id, folderId: id },
     });

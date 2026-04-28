@@ -43,7 +43,7 @@ export async function POST(req: Request) {
       take: 3,
       select: { title: true },
     });
-    const titles = recentNotes.map((n) => n.title || "（无标题）").filter(Boolean);
+    const titles = recentNotes.map((n: any) => n.title || "（无标题）").filter(Boolean);
 
     const summary = `近 24 小时：更新笔记 ${notesUpdated} 篇，相关对话消息约 ${msgCount} 条。`;
     await prisma.learningSnapshot.create({

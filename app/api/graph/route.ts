@@ -45,8 +45,8 @@ export async function GET(req: Request) {
       select: { fromNoteId: true, toNoteId: true },
     }),
   ]);
-  const noteIdSet = new Set(notes.map((n) => n.id));
-  const linksFiltered = links.filter((e) => noteIdSet.has(e.fromNoteId) && noteIdSet.has(e.toNoteId));
+  const noteIdSet = new Set(notes.map((n: any) => n.id));
+  const linksFiltered = links.filter((e: any) => noteIdSet.has(e.fromNoteId) && noteIdSet.has(e.toNoteId));
 
   const degree = new Map<string, number>();
   const edgeList: Array<{
@@ -108,7 +108,7 @@ export async function GET(req: Request) {
 
   return NextResponse.json({
     nodes: [
-      ...notes.map((n) => ({
+      ...notes.map((n: any) => ({
         id: `note:${n.id}`,
         nodeKind: "note" as const,
         title: n.title,

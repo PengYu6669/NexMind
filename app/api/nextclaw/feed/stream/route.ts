@@ -25,7 +25,7 @@ async function buildActiveJobsPayload(userId: string) {
     },
   });
 
-  const uiByJob = jobRows.map((j) => ({
+  const uiByJob = jobRows.map((j: any) => ({
     id: j.id,
     status: j.status,
     type: j.type,
@@ -35,9 +35,9 @@ async function buildActiveJobsPayload(userId: string) {
 
   const noteIds = Array.from(
     new Set(
-      uiByJob.flatMap((j) =>
+      uiByJob.flatMap((j: any) =>
         (j.ui.steps ?? [])
-          .map((s) => (s.toolSummary ?? "").match(/noteId=([a-z0-9]+)/i)?.[1] ?? "")
+          .map((s: any) => (s.toolSummary ?? "").match(/noteId=([a-z0-9]+)/i)?.[1] ?? "")
           .filter(Boolean),
       ),
     ),
@@ -52,14 +52,14 @@ async function buildActiveJobsPayload(userId: string) {
     for (const r of rows) titleMap.set(r.id, r.title || "（无标题）");
   }
 
-  const activeJobs = uiByJob.map((j) => {
+  const activeJobs = uiByJob.map((j: any) => {
     const generatedNotes = (j.ui.steps ?? [])
-      .map((s) => {
+      .map((s: any) => {
         const id = (s.toolSummary ?? "").match(/noteId=([a-z0-9]+)/i)?.[1];
         if (!id) return null;
         return { id, title: titleMap.get(id) ?? "（新笔记）" };
       })
-      .filter((x): x is { id: string; title: string } => Boolean(x));
+      .filter((x: any): x is { id: string; title: string } => Boolean(x));
     return {
       ...j,
       ui: {

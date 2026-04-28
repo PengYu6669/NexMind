@@ -33,11 +33,11 @@ export default async function NotesLayout({ children }: { children: ReactNode })
     include: { tags: { include: { tag: true } } },
   });
 
-  const list = notes.map((note, idx) => ({
+  const list = notes.map((note: any, idx: number) => ({
     id: note.id,
     title: note.title,
     excerpt: note.excerpt ?? note.content.slice(0, 160),
-    tags: note.tags.map((nt) => nt.tag.name),
+    tags: note.tags.map((nt: any) => nt.tag.name),
     timeLabel: formatRelativeTime(note.updatedAt ?? note.createdAt),
     featured: note.pinned || idx === 0,
     folderId: note.folderId,

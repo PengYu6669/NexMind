@@ -26,7 +26,7 @@ export async function GET() {
     },
   });
 
-  const conversations = rows.map((c) => {
+  const conversations = rows.map((c: { id: string; title: string | null; updatedAt: Date; messages: { content: string; role: string }[] }) => {
     const last = c.messages[0];
     const preview = last?.content?.replace(/\s+/g, " ").trim().slice(0, 80) || "暂无消息";
     return {

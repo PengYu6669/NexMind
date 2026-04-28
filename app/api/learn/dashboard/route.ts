@@ -131,7 +131,7 @@ export async function GET() {
 
   // pendingReviewsRaw 里逐条找最新 REVIEW 卡（N+1 但列表上限 30，可接受）
   const pendingReviews = await Promise.all(
-    pendingReviewsRaw.map(async (r) => {
+    pendingReviewsRaw.map(async (r: any) => {
       const card = await prisma.learningCard.findFirst({
         where: { userId: user.id, noteId: r.noteId, type: "REVIEW" },
         orderBy: { createdAt: "desc" },
@@ -177,7 +177,7 @@ export async function GET() {
     }),
   );
 
-  const todayCards = todayCardsRaw.map((c) => {
+  const todayCards = todayCardsRaw.map((c: any) => {
     const selfTest = extractHeadingSection(c.contentMd, "自测问题");
     const answerPoints = extractHeadingSection(c.contentMd, "参考答案要点");
     const pitfall = extractHeadingSection(c.contentMd, "易错点");
@@ -199,7 +199,7 @@ export async function GET() {
     };
   });
 
-  const activeJobs = activeJobsRaw.map((j) => {
+  const activeJobs = activeJobsRaw.map((j: any) => {
     const p = extractStepProgress(j.steps);
     return {
       jobId: j.id,

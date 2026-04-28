@@ -45,20 +45,20 @@ export async function POST(req: Request) {
 
   if (idSet.size > 0) {
     partialSelection = true;
-    const allowed = new Set(conversation.messages.map((m) => m.id));
+    const allowed = new Set(conversation.messages.map((m: any) => m.id));
     for (const id of idSet) {
       if (!allowed.has(id)) {
         return NextResponse.json({ error: "存在不属于当前会话的消息" }, { status: 400 });
       }
     }
-    picked = conversation.messages.filter((m) => idSet.has(m.id));
+    picked = conversation.messages.filter((m: any) => idSet.has(m.id));
     if (picked.length === 0) {
       return NextResponse.json({ error: "所选消息无效" }, { status: 400 });
     }
   }
 
   const conversationText = picked
-    .map((m) => `${m.role === "USER" ? "用户" : m.role === "ASSISTANT" ? "助手" : "系统"}：${m.content}`)
+    .map((m: any) => `${m.role === "USER" ? "用户" : m.role === "ASSISTANT" ? "助手" : "系统"}：${m.content}`)
     .join("\n");
 
   const rawMode = Boolean(body.raw);

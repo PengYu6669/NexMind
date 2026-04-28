@@ -67,7 +67,7 @@ export async function GET(req: Request) {
 
   return NextResponse.json({
     conversationId: conversation.id,
-    messages: conversation.messages.map((m) => ({
+    messages: conversation.messages.map((m: { id: string; role: string; content: string; createdAt: Date }) => ({
       id: m.id,
       role: m.role,
       content: m.content,

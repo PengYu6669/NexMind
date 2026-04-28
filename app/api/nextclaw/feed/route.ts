@@ -42,7 +42,7 @@ export async function GET(req: Request) {
         note: { select: { title: true } },
       },
     });
-    const uiByJob = jobRows.map((j) => ({
+    const uiByJob = jobRows.map((j: any) => ({
       id: j.id,
       status: j.status,
       type: j.type,
@@ -51,9 +51,9 @@ export async function GET(req: Request) {
     }));
     const noteIds = Array.from(
       new Set(
-        uiByJob.flatMap((j) =>
+        uiByJob.flatMap((j: any) =>
           (j.ui.steps ?? [])
-            .map((s) => (s.toolSummary ?? "").match(/noteId=([a-z0-9]+)/i)?.[1] ?? "")
+            .map((s: any) => (s.toolSummary ?? "").match(/noteId=([a-z0-9]+)/i)?.[1] ?? "")
             .filter(Boolean),
         ),
       ),
@@ -66,14 +66,14 @@ export async function GET(req: Request) {
       });
       for (const r of rows) titleMap.set(r.id, r.title || "（无标题）");
     }
-    activeJobs = uiByJob.map((j) => {
+    activeJobs = uiByJob.map((j: any) => {
       const generatedNotes = (j.ui.steps ?? [])
-        .map((s) => {
+        .map((s: any) => {
           const id = (s.toolSummary ?? "").match(/noteId=([a-z0-9]+)/i)?.[1];
           if (!id) return null;
           return { id, title: titleMap.get(id) ?? "（新笔记）" };
         })
-        .filter((x): x is { id: string; title: string } => Boolean(x));
+        .filter((x: any): x is { id: string; title: string } => Boolean(x));
       return {
         ...j,
         ui: {
@@ -117,7 +117,7 @@ export async function GET(req: Request) {
     scheduleLearningJobsProcessing("feed-poll", 6);
   }
 
-  const noteIds = [...new Set(cardsRaw.map((c) => c.noteId))];
+  const noteIds = [...new Set(cardsRaw.map((c: any) => c.noteId))];
   const reviews = await prisma.reviewItem.findMany({
     where: { userId: user.id, noteId: { in: noteIds } },
     select: {
@@ -129,9 +129,9 @@ export async function GET(req: Request) {
       lastReviewedAt: true,
     },
   });
-  const reviewByNote = new Map(reviews.map((r) => [r.noteId, r]));
+  const reviewByNote = new Map<string, any>(reviews.map((r: any) => [r.noteId, r]));
 
-  const cards = cardsRaw.map((c) =>
+  const cards = cardsRaw.map((c: any) =>
     learningCardToFeedDto({
       id: c.id,
       noteId: c.noteId,

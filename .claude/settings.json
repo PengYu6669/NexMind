@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node ./node_modules/typescript/bin/tsc --noEmit)",
+      "Bash(node -e ' *)",
+      "Bash(node -e \"console.log\\(require\\('reactflow/package.json'\\).version\\)\")",
+      "Bash(node -e \"const p = JSON.parse\\(require\\('fs'\\).readFileSync\\('node_modules/reactflow/package.json','utf-8'\\)\\); console.log\\(p.version, JSON.stringify\\(p.exports\\)\\)\")",
+      "Bash(head -20 node_modules/reactflow/dist/esm/index.d.ts)",
+      "Bash(head -30 node_modules/reactflow/dist/types/index.d.ts)",
+      "Bash(npx --no-install tsc --version)",
+      "Bash(node -e \"const p = require\\('@prisma/client'\\); console.log\\(Object.keys\\(p\\).filter\\(k => k.includes\\('Known'\\) || k.includes\\('Prisma'\\)\\).join\\(', '\\)\\)\")",
+      "Bash(node -e \"const p = require\\('@prisma/client'\\); console.log\\(typeof p.PrismaClientKnownRequestError\\)\")",
+      "Bash(node -e \"const fs=require\\('fs'\\); const d=fs.readFileSync\\('node_modules/@prisma/client/index.d.ts','utf8'\\); const lines=d.split\\('\\\\n'\\).filter\\(l=>l.includes\\('export'\\)\\).slice\\(0,30\\); console.log\\(lines.join\\('\\\\n'\\)\\)\")",
+      "Bash(node -e \"const fs=require\\('fs'\\); const d=fs.readFileSync\\('node_modules/.prisma/client/default.d.ts','utf8'\\); const lines=d.split\\('\\\\n'\\).filter\\(l=>l.includes\\('export'\\)\\).slice\\(0,40\\); console.log\\(lines.join\\('\\\\n'\\)\\)\")",
+      "Bash(node -e \"const fs=require\\('fs'\\); const d=fs.readFileSync\\('node_modules/.prisma/client/index.d.ts','utf8'\\); const lines=d.split\\('\\\\n'\\).filter\\(l=>l.includes\\('export'\\)\\).slice\\(0,40\\); console.log\\(lines.join\\('\\\\n'\\)\\)\")",
+      "Bash(node -e \"const fs=require\\('fs'\\); const d=fs.readFileSync\\('node_modules/.prisma/client/index.d.ts','utf8'\\); const lines=d.split\\('\\\\n'\\).filter\\(l=>l.includes\\('KnownRequest'\\) || l.includes\\('PrismaClientKnown'\\) || l.includes\\('export.*Error'\\) || l.includes\\('KnownRequestError'\\)\\); lines.forEach\\(l=>console.log\\(l\\)\\)\")"
+    ]
+  }
+}

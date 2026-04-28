@@ -140,7 +140,7 @@ export async function POST(req: Request) {
       where: { id: { in: attachmentSourceIds }, userId: user.id },
       select: { id: true, conversationId: true },
     });
-    const ok = new Map(rows.map((r) => [r.id, r.conversationId]));
+    const ok = new Map(rows.map((r: any) => [r.id, r.conversationId]));
     for (const id of attachmentSourceIds) {
       if (!ok.has(id)) {
         return NextResponse.json({ error: "附件不存在或无权访问" }, { status: 403 });
@@ -157,7 +157,7 @@ export async function POST(req: Request) {
       select: { id: true, title: true, extractedText: true, parseStatus: true, parseError: true },
     });
     const parts = sources
-      .map((s, idx) => {
+      .map((s: any, idx: number) => {
         const text = (s.extractedText || "").trim().slice(0, 3500);
         if (text) {
           return `【附件 ${idx + 1}：${s.title}】\n${text}`;
@@ -341,7 +341,7 @@ export async function POST(req: Request) {
       role: "system" as const,
       content: systemContent,
     },
-    ...messages.map((m) => ({
+    ...messages.map((m: any) => ({
       role: mapToAiRole(m.role as "USER" | "ASSISTANT" | "SYSTEM"),
       content: m.content,
     })),
@@ -490,7 +490,7 @@ export async function POST(req: Request) {
     });
 
     return {
-      conversationId,
+      conversationId: conversationId!,
       lastUserMessageId,
       message: {
         id: assistant.id,

@@ -94,12 +94,12 @@ export async function GET() {
     { label: RADAR_LABELS[5], value: clamp01((countMap.RELATED ?? 0) / maxC) },
   ];
 
-  const scored = reviewItems.filter((r) => typeof r.lastScore === "number");
+  const scored = reviewItems.filter((r: any) => typeof r.lastScore === "number");
   const avgScore =
-    scored.length > 0 ? scored.reduce((a, b) => a + (b.lastScore as number), 0) / scored.length : null;
+    scored.length > 0 ? scored.reduce((a: any, b: any) => a + (b.lastScore as number), 0) / scored.length : null;
   const retentionPercent = avgScore != null ? Math.round((avgScore / 5) * 100) : 0;
 
-  const maxInterval = reviewItems.reduce((m, r) => Math.max(m, r.intervalDays), 0);
+  const maxInterval = reviewItems.reduce((m: any, r: any) => Math.max(m, r.intervalDays), 0);
   let reviewStage = "L1";
   if (maxInterval >= 16) reviewStage = "L4+";
   else if (maxInterval >= 8) reviewStage = "L4";
@@ -107,7 +107,7 @@ export async function GET() {
   else if (maxInterval >= 2) reviewStage = "L2";
 
   const queue = await Promise.all(
-    reviewQueue.map(async (r) => {
+    reviewQueue.map(async (r: any) => {
       const card = await prisma.learningCard.findFirst({
         where: { userId: user.id, noteId: r.noteId, type: "REVIEW" },
         orderBy: { createdAt: "desc" },
@@ -130,7 +130,7 @@ export async function GET() {
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  const dueToday = reviewItems.filter((r) => {
+  const dueToday = reviewItems.filter((r: any) => {
     const d = new Date(r.dueDate);
     d.setHours(0, 0, 0, 0);
     return d.getTime() === today.getTime();
@@ -160,7 +160,7 @@ export async function GET() {
     const cards = cardsByDay.get(key) ?? 0;
     const due = reviewByDay.get(key)?.due ?? 0;
     const overdue = i === 0
-      ? reviewItems.filter((r) => {
+      ? reviewItems.filter((r: any) => {
           const dd = new Date(r.dueDate);
           dd.setHours(0, 0, 0, 0);
           return dd.getTime() < today.getTime();
