@@ -1,4 +1,3 @@
-import { Prisma } from "@prisma/client";
 import { AUTONOMOUS_MAX_ROUNDS, RAG_TOPK_DEEP, RAG_TOPK_LITE } from "@/lib/nextclaw-agent-config";
 import type { PlanToolName } from "@/lib/nextclaw-agent-types";
 import type { LearningJobStepRecord } from "@/lib/nextclaw-agent-types";
@@ -99,8 +98,8 @@ export async function executeLearningJobsBatch(limit: number): Promise<LearningJ
       await prisma.learningJob.update({
         where: { id: job.id },
         data: {
-          steps: stepRecords as unknown as Prisma.InputJsonValue,
-          ...(extra?.plan ? { plan: extra.plan as Prisma.InputJsonValue } : {}),
+          steps: stepRecords as any,
+          ...(extra?.plan ? { plan: extra.plan as any } : {}),
         },
       });
       emitLearningJobEvent({ type: "job_updated", userId: job.userId, jobId: job.id });
@@ -210,7 +209,7 @@ export async function executeLearningJobsBatch(limit: number): Promise<LearningJ
           finishedAt: new Date(),
           lastError: e instanceof Error ? e.message : String(e),
           ...(stepRecords.length
-            ? { steps: stepRecords as unknown as Prisma.InputJsonValue }
+            ? { steps: stepRecords as any }
             : {}),
         },
       });

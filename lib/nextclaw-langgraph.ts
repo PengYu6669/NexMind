@@ -1,4 +1,3 @@
-import { Prisma } from "@prisma/client";
 import { StateGraph, StateSchema, START, END } from "@langchain/langgraph";
 import { MemorySaver } from "@langchain/langgraph-checkpoint";
 import { PostgresSaver } from "@langchain/langgraph-checkpoint-postgres";
@@ -106,8 +105,8 @@ async function flushSteps(jobId: string, steps: LearningJobStepRecord[], extra?:
   const r = await prisma.learningJob.updateMany({
     where: { id: jobId },
     data: {
-      steps: steps as unknown as Prisma.InputJsonValue,
-      ...(extra?.plan ? { plan: extra.plan as Prisma.InputJsonValue } : {}),
+      steps: steps as any,
+      ...(extra?.plan ? { plan: extra.plan as any } : {}),
     },
   });
   if (r.count === 0) {
@@ -1277,7 +1276,7 @@ export async function runNextClawLangGraphJob(params: {
           await flushSteps(params.jobId, steps);
           await prisma.learningJob.updateMany({
             where: { id: params.jobId },
-            data: { status: "FAILED", finishedAt: new Date(), lastError: msg, steps: steps as unknown as Prisma.InputJsonValue },
+            data: { status: "FAILED", finishedAt: new Date(), lastError: msg, steps: steps as any },
           });
           return;
         }
@@ -1337,7 +1336,7 @@ export async function runNextClawLangGraphJob(params: {
     await flushSteps(params.jobId, steps);
     await prisma.learningJob.updateMany({
       where: { id: params.jobId },
-      data: { status: "FAILED", finishedAt: new Date(), lastError: msg, steps: steps as unknown as Prisma.InputJsonValue },
+      data: { status: "FAILED", finishedAt: new Date(), lastError: msg, steps: steps as any },
     });
   }
 }

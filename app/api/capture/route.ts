@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getAuthUser } from "@/lib/auth";
 import { extractTextFromUrl, normalizeCaptureInput } from "@/lib/extractPage";
@@ -160,7 +159,7 @@ async function flushCaptureJob(
     where: { id: jobId },
     data: {
       status,
-      steps: steps as unknown as Prisma.InputJsonValue,
+      steps: steps as any,
       ...(status === "SUCCEEDED" || status === "FAILED" ? { finishedAt: new Date() } : {}),
       ...(lastError !== undefined ? { lastError } : {}),
     },
