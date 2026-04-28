@@ -12,11 +12,16 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="zh-CN" className="dark h-full">
+    <html lang="zh-CN" className="dark h-full" suppressHydrationWarning>
       <head>
         <link
           rel="stylesheet"
-          href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@24,400,0,0"
+          href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@24,400,0,0&display=block"
+        />
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `document.fonts.ready.then(function(){document.documentElement.classList.add("fonts-loaded")})`,
+          }}
         />
       </head>
       <body className="min-h-full">{children}</body>

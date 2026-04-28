@@ -20,18 +20,6 @@ export function MarketingNav() {
             >
               探索
             </Link>
-            <Link
-              href="/docs"
-              className="text-sm font-medium tracking-tight text-slate-400 transition-colors hover:text-slate-100 antialiased"
-            >
-              文档
-            </Link>
-            <Link
-              href="/docs#api"
-              className="text-sm font-medium tracking-tight text-slate-400 transition-colors hover:text-slate-100 antialiased"
-            >
-              接口
-            </Link>
           </nav>
         </div>
         <div className="flex items-center gap-4">

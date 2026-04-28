@@ -64,6 +64,11 @@
   direction: ltr;
   font-variation-settings: "FILL" 0, "wght" 400, "GRAD" 0, "opsz" 24;
   vertical-align: middle;
+  visibility: hidden;
+}
+
+.fonts-loaded .material-symbols-outlined {
+  visibility: visible;
 }
 
 .glass-panel {
