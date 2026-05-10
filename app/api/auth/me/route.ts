@@ -1,12 +1,8 @@
 import { NextResponse } from "next/server";
 import jwt from "jsonwebtoken";
 import { cookies } from "next/headers";
+import { getJwtSecret } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-
-function getJwtSecret(): string {
-  // 与登录接口保持一致
-  return process.env.AUTH_JWT_SECRET || process.env.JWT_SECRET || "dev-insecure-secret";
-}
 
 export async function GET() {
   const cookieStore = await cookies();
@@ -16,8 +12,7 @@ export async function GET() {
   }
 
   try {
-    const secret = getJwtSecret();
-    const payload = jwt.verify(token, secret) as { sub?: string };
+    const payload = jwt.verify(token, getJwtSecret()) as { sub?: string };
     const userId = payload.sub;
     if (!userId) {
       return NextResponse.json({ user: null }, { status: 401 });
@@ -33,4 +28,3 @@ export async function GET() {
     return NextResponse.json({ user: null }, { status: 401 });
   }
 }
-

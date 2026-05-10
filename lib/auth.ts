@@ -9,7 +9,7 @@ export type AuthUser = {
   plan: string;
 };
 
-function getJwtSecret(): string {
+export function getJwtSecret(): string {
   return process.env.AUTH_JWT_SECRET || process.env.JWT_SECRET || "dev-insecure-secret";
 }
 

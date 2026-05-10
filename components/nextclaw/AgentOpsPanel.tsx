@@ -16,8 +16,6 @@ import {
   buildCaptureGraphChain,
   extractFirstUrlFromJob,
   nodeIdForSource,
-  nodeIdForTheme,
-  nodeIdForNote,
   type CaptureGraphJob,
 } from "@/lib/nextclaw-capture-graph";
 
@@ -80,9 +78,9 @@ function makeNode(params: {
 }
 
 function nodeRadius(node: GraphNode) {
-  if (node.kind === "source") return 14;
-  if (node.kind === "theme") return 11;
-  return 9;
+  if (node.kind === "source") return 8.5;
+  if (node.kind === "theme") return 7.5;
+  return 6.5;
 }
 
 export function AgentOpsPanel({
@@ -101,7 +99,6 @@ export function AgentOpsPanel({
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [viewport, setViewport] = useState({ width: 620, height: 460 });
   const [panZoom, setPanZoom] = useState({ x: 0, y: 0, k: 1 });
-  const graphByJobRef = useRef(new Map<string, { nodes: GraphNode[]; links: GraphEdge[] }>());
   const simulationRef = useRef<Simulation<GraphNode, GraphEdge> | null>(null);
   const panningRef = useRef<{ active: boolean; x: number; y: number }>({ active: false, x: 0, y: 0 });
   const draggingNodeRef = useRef<string | null>(null);
@@ -122,13 +119,9 @@ export function AgentOpsPanel({
   const graphData = useMemo(() => {
     if (!activeJob) return { nodes: [] as GraphNode[], links: [] as GraphEdge[] };
     const parsed = buildCaptureGraphChain(activeJob);
-    let graph = graphByJobRef.current.get(activeJob.id);
-    if (!graph) {
-      graph = { nodes: [], links: [] };
-      graphByJobRef.current.set(activeJob.id, graph);
-    }
+    const graph = { nodes: [] as GraphNode[], links: [] as GraphEdge[] };
 
-    const now = Date.now();
+    const now = 0;
     const byId = new Map(graph.nodes.map((n) => [n.id, n]));
     const nextNodes: GraphNode[] = [];
     const nextLinks: GraphEdge[] = [];
@@ -215,7 +208,7 @@ export function AgentOpsPanel({
     graph.nodes = nextNodes;
     graph.links = nextLinks;
     return graph;
-  }, [activeJob?.id, activeJob?.ui?.steps, activeJob?.ui?.generatedNotes]);
+  }, [activeJob]);
 
   const adjacency = useMemo(() => {
     const m = new Map<string, Set<string>>();
@@ -281,14 +274,14 @@ export function AgentOpsPanel({
       if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
       sim.stop();
     };
-  }, [activeJob?.id, graphData.nodes, graphData.links]);
+  }, [activeJob, graphData.nodes, graphData.links]);
 
   useEffect(() => {
     if (!simulationRef.current) return;
     simulationRef.current.alpha(0.85).restart();
   }, [graphData.nodes.length, graphData.links.length]);
 
-  const now = Date.now() + tick;
+  const now = tick;
   const toScreen = (x: number, y: number) => ({
     x: viewport.width / 2 + panZoom.x + x * panZoom.k,
     y: viewport.height / 2 + panZoom.y + y * panZoom.k,
@@ -299,7 +292,6 @@ export function AgentOpsPanel({
   });
 
   const handleWheel = (e: React.WheelEvent<SVGSVGElement>) => {
-    e.preventDefault();
     const delta = e.deltaY > 0 ? 0.92 : 1.08;
     const nextK = Math.max(0.45, Math.min(2.8, panZoom.k * delta));
     setPanZoom((p) => ({ ...p, k: nextK }));
@@ -405,7 +397,7 @@ export function AgentOpsPanel({
               })}
             </div>
 
-            <div className="h-full rounded-xl border border-outline-variant/15 bg-surface-container-low/20 p-2">
+            <div className="h-full rounded-2xl border border-black/10 bg-white p-2">
               <div className="flex items-center justify-between gap-2 px-1 pb-2">
                 <div className="min-w-0">
                   <div className="truncate text-[11px] font-black text-on-surface">知识图谱预览</div>
@@ -416,7 +408,7 @@ export function AgentOpsPanel({
                 </span>
               </div>
 
-              <div ref={hostRef} className="h-full min-h-[160px] max-h-[60vh] overflow-hidden rounded-lg border border-outline-variant/12 bg-[#040713]">
+              <div ref={hostRef} className="h-full min-h-[160px] max-h-[60vh] overflow-hidden rounded-xl border border-black/10 bg-[#fbfbfa]">
                 <svg
                   width={viewport.width}
                   height={viewport.height}
@@ -436,7 +428,7 @@ export function AgentOpsPanel({
                       </feMerge>
                     </filter>
                   </defs>
-                  <rect x={0} y={0} width={viewport.width} height={viewport.height} fill="rgba(4,7,19,0.98)" />
+                  <rect x={0} y={0} width={viewport.width} height={viewport.height} fill="#fbfbfa" />
                   {graphData.links.map((l) => {
                     const sid = nodeRefId(l.source);
                     const tid = nodeRefId(l.target);
@@ -456,8 +448,8 @@ export function AgentOpsPanel({
                         key={l.id}
                         d={`M ${ps.x} ${ps.y} Q ${mx + curve} ${my - curve} ${pt.x} ${pt.y}`}
                         fill="none"
-                        stroke={hover ? "rgba(236,72,153,0.92)" : "rgba(196,142,255,0.45)"}
-                        strokeWidth={hover ? 2.2 : 1.4}
+                        stroke={hover ? "#111111" : "#cfcfca"}
+                        strokeWidth={hover ? 1.8 : 1}
                         opacity={l.active ? 1 : 0.28}
                       />
                     );
@@ -470,14 +462,9 @@ export function AgentOpsPanel({
                     const age = Math.max(0, now - n.bornAt);
                     const appear = Math.min(1, age / 280);
                     const r = baseR * (0.45 + 0.55 * appear);
-                    const fill =
-                      n.kind === "source"
-                        ? "rgba(122,63,255,0.92)"
-                        : n.kind === "theme"
-                          ? "rgba(167,106,255,0.82)"
-                          : "rgba(196,142,255,0.72)";
-                    const stroke = hover ? "rgba(255,255,255,0.95)" : "rgba(255,255,255,0.22)";
-                    const opacity = 0.45 + appear * 0.55;
+                    const fill = n.kind === "source" ? "#111111" : n.kind === "theme" ? "#dceeb1" : "#ffffff";
+                    const stroke = hover ? "#111111" : n.kind === "note" ? "#b8b8b2" : "#111111";
+                    const opacity = 0.72 + appear * 0.28;
                     return (
                       <g
                         key={n.id}
@@ -498,14 +485,14 @@ export function AgentOpsPanel({
                           fill={fill}
                           opacity={opacity}
                           stroke={stroke}
-                          strokeWidth={hover ? 2 : 1}
-                          filter="url(#nodeGlow)"
+                          strokeWidth={hover ? 2 : 1.3}
+                          filter={hover ? "url(#nodeGlow)" : undefined}
                         />
                         <text
                           x={p.x}
                           y={p.y + r + 12}
                           textAnchor="middle"
-                          fill={hover ? "rgba(255,255,255,0.98)" : "rgba(235,222,255,0.88)"}
+                          fill={hover ? "#111111" : "#343434"}
                           fontSize={11}
                           fontWeight={n.kind === "source" ? 700 : 500}
                         >

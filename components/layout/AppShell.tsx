@@ -13,13 +13,13 @@ type AppShellProps = {
 
 export function AppShell({ center, right }: AppShellProps) {
   return (
-    <div className="h-[100dvh] min-h-0 overflow-hidden bg-surface">
+    <div className="h-[100dvh] min-h-0 overflow-hidden bg-[#fbfbfa] font-body text-black">
       <AppSidebar />
       <div className="flex h-full min-h-0 flex-col pl-64">
         <AppTopBar />
-        <div className="flex min-h-0 flex-1 overflow-hidden pt-16 pb-8">
+        <div className="flex min-h-0 flex-1 overflow-hidden pb-6 pt-16">
           {center === null ? null : (
-            <div className="flex min-h-0 w-full max-w-md shrink-0 flex-col self-stretch overflow-hidden border-r border-outline-variant/10 lg:max-w-[380px]">
+            <div className="flex min-h-0 w-full max-w-md shrink-0 flex-col self-stretch overflow-hidden border-r border-black/10 bg-white lg:max-w-[380px]">
               {center ?? <NotesListPanel className="min-h-0 flex-1 border-0" />}
             </div>
           )}

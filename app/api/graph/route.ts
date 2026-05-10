@@ -45,8 +45,8 @@ export async function GET(req: Request) {
       select: { fromNoteId: true, toNoteId: true },
     }),
   ]);
-  const noteIdSet = new Set(notes.map((n: any) => n.id));
-  const linksFiltered = links.filter((e: any) => noteIdSet.has(e.fromNoteId) && noteIdSet.has(e.toNoteId));
+  const noteIdSet = new Set(notes.map((n) => n.id));
+  const linksFiltered = links.filter((e) => noteIdSet.has(e.fromNoteId) && noteIdSet.has(e.toNoteId));
 
   const degree = new Map<string, number>();
   const edgeList: Array<{
@@ -74,41 +74,9 @@ export async function GET(req: Request) {
     pushEdge(`note:${e.fromNoteId}`, `note:${e.toNoteId}`, "LINK");
   }
 
-  // 视觉聚合：同文件夹笔记自动成环（不依赖显式双向链接）
-  // - folder 模式：当前结果集即该文件夹，直接整体成环（更鲁棒）
-  // - all 模式：按 folderId 分组后各自成环（未分类不参与）
-  const linkAsRing = (bucket: typeof notes) => {
-    if (bucket.length < 2) return;
-    const ordered = [...bucket].sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
-    if (ordered.length === 2) {
-      pushEdge(`note:${ordered[0]!.id}`, `note:${ordered[1]!.id}`, "LINK");
-      return;
-    }
-    for (let i = 0; i < ordered.length; i += 1) {
-      const from = ordered[i]!;
-      const to = ordered[(i + 1) % ordered.length]!;
-      pushEdge(`note:${from.id}`, `note:${to.id}`, "LINK");
-    }
-  };
-
-  if (folderFilter.mode === "folder") {
-    linkAsRing(notes);
-  } else {
-    const folderBuckets = new Map<string, typeof notes>();
-    for (const n of notes) {
-      if (!n.folderId) continue;
-      const arr = folderBuckets.get(n.folderId) ?? [];
-      arr.push(n);
-      folderBuckets.set(n.folderId, arr);
-    }
-    for (const [, bucket] of folderBuckets) {
-      linkAsRing(bucket);
-    }
-  }
-
   return NextResponse.json({
     nodes: [
-      ...notes.map((n: any) => ({
+      ...notes.map((n) => ({
         id: `note:${n.id}`,
         nodeKind: "note" as const,
         title: n.title,

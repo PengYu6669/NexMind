@@ -150,7 +150,7 @@ export function NextClawTaskDesk({
     setBusy(true);
     setErr(null);
     try {
-      let targetNoteId = noteId;
+      const targetNoteId = noteId;
       if (createMode === "capture") {
         const input = captureInput.trim();
         if (!input) throw new Error("请先输入 URL 或文本");
@@ -405,7 +405,7 @@ export function NextClawTaskDesk({
               </button>
 
               {noteDropdownOpen ? (
-                <div className="absolute left-0 right-0 z-20 mt-1 overflow-hidden rounded-xl border border-outline-variant/15 bg-[#1A1B2E] shadow-lg">
+                <div className="absolute left-0 right-0 z-20 mt-1 overflow-hidden rounded-xl border border-black/10 bg-white shadow-lg">
                   <div className="max-h-[220px] overflow-y-auto overscroll-contain">
                     {notes.map((n) => {
                       const active = n.id === noteId;
@@ -421,8 +421,8 @@ export function NextClawTaskDesk({
                           }}
                           className={`w-full px-2.5 py-2 text-left text-xs transition-colors ${
                             active
-                              ? "bg-[#7C3AED]/20 text-white"
-                              : "text-on-surface hover:bg-surface-container-low/40"
+                              ? "bg-black text-white"
+                              : "text-neutral-700 hover:bg-[#f7f7f5]"
                           }`}
                         >
                           <span className="block truncate">{n.title || "（无标题）"}</span>
@@ -448,28 +448,34 @@ export function NextClawTaskDesk({
         )}
       </div>
 
-      <div className="mt-2 flex items-center rounded-lg bg-[#1A1B2E] p-0.5">
+      <div className="mt-2 grid grid-cols-2 gap-1 rounded-xl border border-black/10 bg-white p-1">
         <button
           type="button"
           onClick={() => setLearnMode("lite")}
-          className={`min-w-0 flex-1 rounded-md py-1.5 text-xs font-bold transition-colors ${
+          className={`min-w-0 rounded-lg px-2 py-2 text-xs font-bold transition-colors ${
             learnMode === "lite"
-              ? "bg-[#7C3AED] text-white shadow-[0_0_0_3px_rgba(124,58,237,0.18)]"
-              : "text-on-surface-variant hover:text-on-surface"
+              ? "bg-black text-white shadow-sm"
+              : "text-neutral-500 hover:bg-[#f7f7f5] hover:text-black"
           }`}
         >
-          轻量
+          <span className="block">轻量</span>
+          <span className={`mt-0.5 block text-[10px] font-medium ${learnMode === "lite" ? "text-white/65" : "text-neutral-400"}`}>
+            主笔记
+          </span>
         </button>
         <button
           type="button"
           onClick={() => setLearnMode("deep")}
-          className={`min-w-0 flex-1 rounded-md py-1.5 text-xs font-bold transition-colors ${
+          className={`min-w-0 rounded-lg px-2 py-2 text-xs font-bold transition-colors ${
             learnMode === "deep"
-              ? "bg-[#7C3AED] text-white shadow-[0_0_0_3px_rgba(124,58,237,0.18)]"
-              : "text-on-surface-variant hover:text-on-surface"
+              ? "bg-black text-white shadow-sm"
+              : "text-neutral-500 hover:bg-[#f7f7f5] hover:text-black"
           }`}
         >
-          深度
+          <span className="block">深度</span>
+          <span className={`mt-0.5 block text-[10px] font-medium ${learnMode === "deep" ? "text-white/65" : "text-neutral-400"}`}>
+            全分片
+          </span>
         </button>
       </div>
 

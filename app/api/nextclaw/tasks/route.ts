@@ -12,23 +12,30 @@ export async function GET() {
 
   try {
     const jobs = await findLearningJobsForTaskDesk(user.id, 30);
+    const noteIds = Array.from(new Set(jobs.map((j) => j.noteId).filter((id): id is string => Boolean(id))));
+    const latestCards = noteIds.length
+      ? await prisma.learningCard.findMany({
+          where: { userId: user.id, noteId: { in: noteIds } },
+          orderBy: { createdAt: "desc" },
+          take: Math.max(60, noteIds.length * 4),
+          select: { id: true, noteId: true },
+        })
+      : [];
+    const latestCardByNoteId = new Map<string, { id: string }>();
+    for (const card of latestCards) {
+      if (!latestCardByNoteId.has(card.noteId)) {
+        latestCardByNoteId.set(card.noteId, { id: card.id });
+      }
+    }
 
     // 自愈：任务台轮询时若存在待处理任务，响应后 kick 一次处理（不阻塞列表接口）。
     if (jobs.some((j) => j.status === "PENDING" || j.status === "RUNNING")) {
       scheduleLearningJobsProcessing("tasks-poll", 6);
     }
 
-    const tasks = await Promise.all(
-      jobs.map(async (j) => {
-        const latestCard = j.noteId
-          ? await prisma.learningCard.findFirst({
-              where: { userId: user.id, noteId: j.noteId },
-              orderBy: { createdAt: "desc" },
-              select: { id: true },
-            })
-          : null;
-
-        return {
+    const tasks = jobs.map((j) => {
+      const latestCard = j.noteId ? latestCardByNoteId.get(j.noteId) : null;
+      return {
           id: j.id,
           noteId: j.noteId,
           noteTitle: j.title ?? j.note?.title ?? "（无标题）",
@@ -49,9 +56,8 @@ export async function GET() {
                 latestCardId: latestCard?.id ?? null,
               }
             : null,
-        };
-      })
-    );
+      };
+    });
 
     return NextResponse.json({ ok: true, tasks });
   } catch (e) {

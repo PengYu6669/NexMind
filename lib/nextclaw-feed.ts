@@ -16,6 +16,7 @@ export type NextClawFeedCardDto = {
   metaLeft: string;
   metaRight: string;
   chips?: string[];
+  sourceNotes?: { noteId: string; title: string; distance?: number | null }[];
   codeA?: string;
   codeB?: string;
   review?: { reviewItemId: string; progressLabel: string; dueLabel: string; prompt: string };
@@ -81,6 +82,27 @@ function mapDbTypeToUi(type: LearningCardType): {
   }
 }
 
+function extractSourceNotes(sources: unknown): NextClawFeedCardDto["sourceNotes"] {
+  if (!sources || typeof sources !== "object") return undefined;
+  const raw = (sources as { relatedNotes?: unknown }).relatedNotes;
+  if (!Array.isArray(raw)) return undefined;
+  const out = raw
+    .map((x) =>
+      x && typeof x === "object"
+        ? (x as { noteId?: unknown; title?: unknown; distance?: unknown })
+        : null,
+    )
+    .filter((x): x is { noteId?: unknown; title?: unknown; distance?: unknown } => Boolean(x))
+    .map((x) => ({
+      noteId: typeof x.noteId === "string" ? x.noteId : "",
+      title: typeof x.title === "string" && x.title.trim() ? x.title.trim() : "无标题",
+      distance: typeof x.distance === "number" ? x.distance : null,
+    }))
+    .filter((x) => x.noteId)
+    .slice(0, 5);
+  return out.length ? out : undefined;
+}
+
 export function learningCardToFeedDto(params: {
   id: string;
   noteId: string;
@@ -88,6 +110,7 @@ export function learningCardToFeedDto(params: {
   type: LearningCardType;
   title: string;
   contentMd: string;
+  sources?: unknown;
   createdAt: Date;
   review?: {
     id: string;
@@ -135,6 +158,7 @@ export function learningCardToFeedDto(params: {
     metaLeft,
     metaRight: relativeTimeZh(params.createdAt.toISOString()),
     chips: undefined,
+    sourceNotes: extractSourceNotes(params.sources),
     codeA,
     codeB,
     review,

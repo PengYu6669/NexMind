@@ -1,19 +1,11 @@
 import { NextResponse } from "next/server";
+import { internalCronAuthError, verifyInternalCron } from "@/lib/internal-cron";
 import { executeLearningJobsBatch } from "@/lib/learning-jobs-runner";
 
-function verifyCron(req: Request): boolean {
-  const token = process.env.INTERNAL_CRON_TOKEN?.trim();
-  if (!token) return false;
-  const auth = req.headers.get("authorization")?.trim();
-  return auth === `Bearer ${token}`;
-}
-
 export async function POST(req: Request) {
-  if (!verifyCron(req)) {
-    return NextResponse.json(
-      { error: process.env.INTERNAL_CRON_TOKEN ? "未授权" : "服务未配置 INTERNAL_CRON_TOKEN" },
-      { status: process.env.INTERNAL_CRON_TOKEN ? 401 : 503 }
-    );
+  if (!verifyInternalCron(req)) {
+    const authError = internalCronAuthError();
+    return NextResponse.json({ error: authError.error }, { status: authError.status });
   }
 
   const body = (await req.json().catch(() => ({}))) as { limit?: number };

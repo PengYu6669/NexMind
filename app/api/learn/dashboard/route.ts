@@ -2,6 +2,33 @@ import { NextResponse } from "next/server";
 import { getAuthUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
+type PendingReviewRow = {
+  id: string;
+  noteId: string;
+  dueDate: Date;
+  easeFactor: number;
+  lastScore: number | null;
+  note: { title: string | null };
+};
+
+type TodayCardRow = {
+  id: string;
+  noteId: string;
+  type: string;
+  title: string;
+  contentMd: string;
+  createdAt: Date;
+  note: { title: string | null };
+};
+
+type ActiveJobRow = {
+  id: string;
+  type: string;
+  title: string | null;
+  steps: unknown;
+  note: { title: string | null } | null;
+};
+
 function mdToPlainSummary(md: string, max = 420): string {
   const noFence = md.replace(/```[\s\S]*?```/g, " ");
   return noFence
@@ -129,55 +156,64 @@ export async function GET() {
     }),
   ]);
 
-  // pendingReviewsRaw 里逐条找最新 REVIEW 卡（N+1 但列表上限 30，可接受）
-  const pendingReviews = await Promise.all(
-    pendingReviewsRaw.map(async (r: any) => {
-      const card = await prisma.learningCard.findFirst({
-        where: { userId: user.id, noteId: r.noteId, type: "REVIEW" },
+  const pendingRows = pendingReviewsRaw as PendingReviewRow[];
+  const todayRows = todayCardsRaw as TodayCardRow[];
+  const jobRows = activeJobsRaw as ActiveJobRow[];
+
+  const reviewNoteIds = Array.from(new Set(pendingRows.map((r) => r.noteId).filter(Boolean)));
+  const reviewCardsRaw = reviewNoteIds.length
+    ? await prisma.learningCard.findMany({
+        where: { userId: user.id, noteId: { in: reviewNoteIds }, type: "REVIEW" },
         orderBy: { createdAt: "desc" },
-        select: { id: true, contentMd: true, title: true },
-      });
+        take: Math.max(60, reviewNoteIds.length * 3),
+        select: { id: true, noteId: true, contentMd: true, title: true },
+      })
+    : [];
+  const latestReviewCardByNote = new Map<string, { id: string; contentMd: string; title: string }>();
+  for (const card of reviewCardsRaw) {
+    if (!latestReviewCardByNote.has(card.noteId)) latestReviewCardByNote.set(card.noteId, card);
+  }
 
-      const contentMd = card?.contentMd ?? "";
-      const selfTest = extractHeadingSection(contentMd, "自测问题");
-      const answerPoints = extractHeadingSection(contentMd, "参考答案要点");
-      const coreKnowledge = extractHeadingSection(contentMd, "核心知识点");
-      const coreBefore = coreKnowledge
-        ? coreKnowledge
-        : selfTest
-          ? contentMd.slice(0, contentMd.indexOf(selfTest)).trim()
-          : contentMd;
+  const pendingReviews = pendingRows.map((r) => {
+    const card = latestReviewCardByNote.get(r.noteId) ?? null;
+    const contentMd = card?.contentMd ?? "";
+    const selfTest = extractHeadingSection(contentMd, "自测问题");
+    const answerPoints = extractHeadingSection(contentMd, "参考答案要点");
+    const coreKnowledge = extractHeadingSection(contentMd, "核心知识点");
+    const coreBefore = coreKnowledge
+      ? coreKnowledge
+      : selfTest
+        ? contentMd.slice(0, contentMd.indexOf(selfTest)).trim()
+        : contentMd;
 
-      return {
-        reviewItemId: r.id,
-        noteId: r.noteId,
-        noteTitle: r.note.title ?? "（无标题）",
-        lastScore: typeof r.lastScore === "number" ? r.lastScore : null,
-        easeFactor: r.easeFactor,
-        dueDate: r.dueDate.toISOString(),
-        dueLabel: dueLabelZh(r.dueDate, today0),
-        learningCardId: card?.id ?? null,
-        // 用于右侧展示：尽量给“能复习”的信息而不是整段卡片
-        reviewCardTitle: card?.title ?? "",
-        reviewCardContentMd: contentMd,
-        corePreview: mdToPlainSummary(coreBefore, 240),
-        selfTestPreview: selfTest ? mdToPlainSummary(selfTest, 220) : "",
-        answerPointsPreview: answerPoints ? mdToPlainSummary(answerPoints, 360) : "",
-        answerPointItems: answerPoints ? extractBulletItems(answerPoints, 8) : [],
-        estimatedMinutes: Math.max(
-          1,
-          Math.min(
-            6,
-            Math.round(
-              ((selfTest ? selfTest.length : contentMd.length) + (answerPoints ? answerPoints.length : 0)) / 420,
-            ),
+    return {
+      reviewItemId: r.id,
+      noteId: r.noteId,
+      noteTitle: r.note.title ?? "（无标题）",
+      lastScore: typeof r.lastScore === "number" ? r.lastScore : null,
+      easeFactor: r.easeFactor,
+      dueDate: r.dueDate.toISOString(),
+      dueLabel: dueLabelZh(r.dueDate, today0),
+      learningCardId: card?.id ?? null,
+      reviewCardTitle: card?.title ?? "",
+      reviewCardContentMd: contentMd,
+      corePreview: mdToPlainSummary(coreBefore, 240),
+      selfTestPreview: selfTest ? mdToPlainSummary(selfTest, 220) : "",
+      answerPointsPreview: answerPoints ? mdToPlainSummary(answerPoints, 360) : "",
+      answerPointItems: answerPoints ? extractBulletItems(answerPoints, 8) : [],
+      estimatedMinutes: Math.max(
+        1,
+        Math.min(
+          6,
+          Math.round(
+            ((selfTest ? selfTest.length : contentMd.length) + (answerPoints ? answerPoints.length : 0)) / 420,
           ),
         ),
-      };
-    }),
-  );
+      ),
+    };
+  });
 
-  const todayCards = todayCardsRaw.map((c: any) => {
+  const todayCards = todayRows.map((c) => {
     const selfTest = extractHeadingSection(c.contentMd, "自测问题");
     const answerPoints = extractHeadingSection(c.contentMd, "参考答案要点");
     const pitfall = extractHeadingSection(c.contentMd, "易错点");
@@ -199,7 +235,7 @@ export async function GET() {
     };
   });
 
-  const activeJobs = activeJobsRaw.map((j: any) => {
+  const activeJobs = jobRows.map((j) => {
     const p = extractStepProgress(j.steps);
     return {
       jobId: j.id,

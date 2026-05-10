@@ -1,17 +1,12 @@
 import { NextResponse } from "next/server";
-import { randomBytes } from "crypto";
 import path from "path";
 import { readFile } from "fs/promises";
 import { prisma } from "@/lib/prisma";
 import { getAuthUser } from "@/lib/auth";
 import { uploadNoteImage } from "@/lib/tos-note-upload";
+import { makeStorageFileName } from "@/lib/upload-file-name";
 
 const MAX_BYTES = 10 * 1024 * 1024;
-
-function safeBaseName(name: string): string {
-  const base = path.basename(name).replace(/[^\w.\-\u4e00-\u9fff]+/g, "_");
-  return base.slice(0, 120) || "image";
-}
 
 export async function POST(req: Request, ctx: { params: Promise<{ id: string }> }) {
   const user = await getAuthUser();
@@ -54,10 +49,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     }
 
     const buf = Buffer.from(await file.arrayBuffer());
-    const ext = path.extname(file.name) || "";
-    const token = randomBytes(8).toString("hex");
-    const base = safeBaseName(path.basename(file.name, ext));
-    const storageFileName = `${Date.now()}-${token}-${base}${ext || ""}`;
+    const storageFileName = makeStorageFileName(file.name, "image");
 
     const out = await uploadNoteImage({
       userId: user.id,
@@ -113,7 +105,7 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
   const user = await getAuthUser();
   if (!user) return NextResponse.json({ error: "未登录" }, { status: 401 });
 
-  const { id: _noteId } = await ctx.params;
+  await ctx.params;
 
   const url = new URL(req.url);
   const src = url.searchParams.get("src")?.trim() ?? "";

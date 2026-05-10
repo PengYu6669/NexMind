@@ -22,6 +22,41 @@ import {
 
 marked.setOptions({ gfm: true, breaks: true });
 
+type NoteAiAction = "summary" | "expand" | "polish" | "outline" | "qa" | "actions";
+type NoteExpertAction = Exclude<NoteAiAction, "summary" | "polish">;
+
+const NOTE_EXPERT_ACTIONS: Array<{
+  action: NoteExpertAction;
+  icon: string;
+  label: string;
+  description: string;
+}> = [
+  {
+    action: "expand",
+    icon: "expand",
+    label: "扩充内容",
+    description: "选中时替换片段，未选中时追加扩写",
+  },
+  {
+    action: "outline",
+    icon: "format_list_bulleted",
+    label: "整理大纲",
+    description: "保留原文，在末尾追加结构化大纲",
+  },
+  {
+    action: "qa",
+    icon: "quiz",
+    label: "提炼问答",
+    description: "生成复习问答，适合学习型笔记",
+  },
+  {
+    action: "actions",
+    icon: "checklist",
+    label: "行动清单",
+    description: "提炼今天、本周、本月的可执行事项",
+  },
+];
+
 function normalizeUrl(raw: string): string | null {
   const base = raw.trim().replace(/，/g, ",").replace(/\s+/g, "");
   if (!base) return null;
@@ -340,6 +375,19 @@ export function NoteEditor({
       },
       transformPastedHTML: (html) => normalizePastedHtml(html),
       handleDOMEvents: {
+        keydown: (_view, event) => {
+          if (event.key !== "Enter" || event.defaultPrevented || event.isComposing) return false;
+          if (!editorRef.current) return false;
+          const current = editorRef.current;
+          if (current.isActive("codeBlock") || current.isActive("bulletList") || current.isActive("orderedList")) {
+            return false;
+          }
+          event.preventDefault();
+          if (event.shiftKey) {
+            return current.chain().focus().setHardBreak().run();
+          }
+          return current.chain().focus().splitBlock().run();
+        },
         paste: (_view, event) => {
           const e = event as ClipboardEvent;
           const filesFromFiles = Array.from(e.clipboardData?.files ?? []).filter((f) => f.type.startsWith("image/"));
@@ -742,8 +790,6 @@ export function NoteEditor({
     setDirty(true);
   }
 
-  type NoteAiAction = "summary" | "expand" | "polish" | "outline" | "qa" | "actions";
-
   function getSelectionPlainTextOrWhole(): string {
     if (!editor) return "";
     const { from, to } = editor.state.selection;
@@ -858,6 +904,12 @@ export function NoteEditor({
     }
 
     // 其余动作：有选区替换选区；无选区替换全文
+    if (action === "expand" && from === to) {
+      const blockHtml = markdownOrHtmlToHtml(`\n\n---\n\n### AI 专家结果：扩充内容\n\n${markdown}\n`);
+      editor.chain().focus("end").insertContent(blockHtml).run();
+      return;
+    }
+
     if (from === to) {
       editor.commands.setContent(html);
     } else {
@@ -899,17 +951,12 @@ export function NoteEditor({
     }
   }
 
-  async function runAiExpert(action: Exclude<NoteAiAction, "summary" | "polish">) {
+  async function runAiExpert(action: NoteExpertAction) {
     if (!editor) return;
     setError(null);
     setAiBusy(true);
-    const actionLabelMap: Record<typeof action, string> = {
-      expand: "扩充内容",
-      outline: "整理大纲",
-      qa: "提炼问答",
-      actions: "行动清单",
-    };
-    setAiRunningLabel(`${actionLabelMap[action]}处理中...`);
+    const actionLabel = NOTE_EXPERT_ACTIONS.find((item) => item.action === action)?.label ?? action;
+    setAiRunningLabel(`${actionLabel}处理中...`);
     try {
       await applyMarkdownToEditor(action);
     } catch (e) {
@@ -1037,14 +1084,14 @@ export function NoteEditor({
   return (
     <div className="min-h-0 flex h-full">
       {/* 中间编辑区（滚动位置用于笔记互链返回） */}
-      <div ref={mainScrollRef} className="min-h-0 flex-1 overflow-y-auto px-12 py-10">
-        <div className="mx-auto w-full max-w-4xl no-scrollbar">
+      <div ref={mainScrollRef} className="note-markdown-editor min-h-0 flex-1 overflow-y-auto bg-[#fbfbfa] px-8 py-8">
+        <div className="mx-auto flex min-h-full w-full max-w-4xl flex-col">
           {/* AI 摘要 */}
-          <div className="mb-12 rounded-2xl border border-primary/5 bg-surface-container-low p-6 relative group">
+          <div className="relative mb-6 border-b border-black/10 pb-5">
             <div className="absolute -top-3 left-6 px-3 py-1 rounded-full bg-primary text-on-primary text-[10px] font-black tracking-widest uppercase">
               AI 摘要
             </div>
-            <p className="text-sm text-on-surface-variant leading-relaxed italic mt-8 whitespace-pre-wrap">
+            <p className="mt-8 whitespace-pre-wrap text-sm leading-7 text-neutral-500">
               {aiSummary ? aiSummary : "点击“生成摘要”提取重点，输出 3–8 句简洁摘要。"}
             </p>
             <div className="mt-4 flex items-center justify-between gap-3">
@@ -1062,7 +1109,7 @@ export function NoteEditor({
           </div>
 
           {/* Editor Header */}
-          <div className="flex items-center justify-between gap-3 mb-4">
+          <div className="mb-4 flex items-center justify-between gap-3">
             <div className="flex items-center gap-2">
               {navBack ? (
                 <button
@@ -1144,7 +1191,7 @@ export function NoteEditor({
 
           {/* Title */}
           <input
-            className="mb-4 w-full rounded-xl border border-outline-variant/10 bg-surface-container-lowest px-4 py-3 text-2xl font-bold text-on-surface outline-none focus:ring-1 focus:ring-primary/30"
+            className="mb-4 w-full border-0 bg-transparent px-0 py-2 text-4xl font-black leading-tight text-black outline-none placeholder:text-neutral-300"
             value={title}
             onChange={(e) => {
               setTitle(e.target.value);
@@ -1153,11 +1200,11 @@ export function NoteEditor({
           />
 
           {/* Editor Content — 站内笔记链与外链样式区分 */}
-          <div className="note-editor-surface w-full min-h-[520px] rounded-2xl border border-outline-variant/10 bg-surface-container-lowest [&_.ProseMirror_a[href^='/notes/']]:cursor-pointer [&_.ProseMirror_a[href^='/notes/']]:font-medium [&_.ProseMirror_a[href^='/notes/']]:text-primary [&_.ProseMirror_a[href^='/notes/']]:underline [&_.ProseMirror_a[href^='/notes/']]:decoration-primary/50">
+          <div className="note-editor-surface min-h-[calc(100vh-260px)] w-full flex-1 bg-transparent [&_.ProseMirror_a[href^='/notes/']]:cursor-pointer [&_.ProseMirror_a[href^='/notes/']]:font-medium [&_.ProseMirror_a[href^='/notes/']]:text-primary [&_.ProseMirror_a[href^='/notes/']]:underline [&_.ProseMirror_a[href^='/notes/']]:decoration-primary/50">
             {editor ? (
               <EditorContent
                 editor={editor}
-                className="px-5 py-4 outline-none focus:outline-none"
+                className="outline-none focus:outline-none"
               />
             ) : null}
           </div>
@@ -1167,66 +1214,36 @@ export function NoteEditor({
       </div>
 
       {/* 右侧面板 */}
-      <aside className="w-80 bg-surface-container-low/50 border-l border-outline-variant/10 py-10 px-6 flex flex-col gap-10">
+      <aside className="flex w-80 flex-col gap-8 border-l border-black/10 bg-white px-5 py-8">
         <section>
-          <h3 className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-4">AI 专家选项</h3>
-          <div className="mb-3 rounded-lg border border-outline-variant/15 bg-surface-container-lowest/70 px-3 py-2 text-[11px] text-on-surface-variant">
-            当前作用范围：{hasSelection ? "选中片段" : "全文"}
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <h3 className="text-xs font-bold text-neutral-950">AI 专家选项</h3>
+            <span className="rounded-full border border-black/10 px-2 py-1 text-[10px] font-medium text-neutral-500">
+              {hasSelection ? "选中片段" : "全文"}
+            </span>
           </div>
           {aiBusy && aiRunningLabel ? (
-            <div className="mb-3 rounded-lg border border-primary/20 bg-primary/8 px-3 py-2 text-[11px] text-primary">
+            <div className="mb-3 rounded-lg border border-black/10 bg-[#f7f7f5] px-3 py-2 text-[11px] font-medium text-neutral-700">
               {aiRunningLabel}
             </div>
           ) : null}
           <div className="space-y-2">
-            <button
-              type="button"
-              className="w-full flex items-center justify-between p-3 bg-surface-container-lowest hover:bg-surface-container transition-colors rounded-xl group"
-              onClick={() => void runAiExpert("expand")}
-              disabled={aiBusy}
-            >
-              <div className="flex items-center gap-3">
-                <MaterialIcon name="expand" className="text-slate-400 group-hover:text-primary transition-colors" />
-                <span className="text-xs font-medium text-on-surface-variant">扩充内容</span>
-              </div>
-              <MaterialIcon name="chevron_right" className="text-slate-600 text-sm" />
-            </button>
-            <button
-              type="button"
-              className="w-full flex items-center justify-between p-3 bg-surface-container-lowest hover:bg-surface-container transition-colors rounded-xl group"
-              onClick={() => void runAiExpert("outline")}
-              disabled={aiBusy}
-            >
-              <div className="flex items-center gap-3">
-                <MaterialIcon name="format_list_bulleted" className="text-slate-400 group-hover:text-primary transition-colors" />
-                <span className="text-xs font-medium text-on-surface-variant">整理大纲</span>
-              </div>
-              <MaterialIcon name="chevron_right" className="text-slate-600 text-sm" />
-            </button>
-            <button
-              type="button"
-              className="w-full flex items-center justify-between p-3 bg-surface-container-lowest hover:bg-surface-container transition-colors rounded-xl group"
-              onClick={() => void runAiExpert("qa")}
-              disabled={aiBusy}
-            >
-              <div className="flex items-center gap-3">
-                <MaterialIcon name="quiz" className="text-slate-400 group-hover:text-primary transition-colors" />
-                <span className="text-xs font-medium text-on-surface-variant">提炼问答</span>
-              </div>
-              <MaterialIcon name="chevron_right" className="text-slate-600 text-sm" />
-            </button>
-            <button
-              type="button"
-              className="w-full flex items-center justify-between p-3 bg-surface-container-lowest hover:bg-surface-container transition-colors rounded-xl group"
-              onClick={() => void runAiExpert("actions")}
-              disabled={aiBusy}
-            >
-              <div className="flex items-center gap-3">
-                <MaterialIcon name="checklist" className="text-slate-400 group-hover:text-primary transition-colors" />
-                <span className="text-xs font-medium text-on-surface-variant">行动清单</span>
-              </div>
-              <MaterialIcon name="chevron_right" className="text-slate-600 text-sm" />
-            </button>
+            {NOTE_EXPERT_ACTIONS.map((item) => (
+              <button
+                key={item.action}
+                type="button"
+                className="group flex w-full items-center gap-3 rounded-lg border border-black/10 bg-white p-3 text-left transition-colors hover:border-black/20 hover:bg-[#f7f7f5] disabled:cursor-not-allowed disabled:opacity-60"
+                onClick={() => void runAiExpert(item.action)}
+                disabled={aiBusy}
+              >
+                <MaterialIcon name={item.icon} className="text-lg text-neutral-400 transition-colors group-hover:text-neutral-950" />
+                <span className="min-w-0 flex-1">
+                  <span className="block text-xs font-semibold text-neutral-950">{item.label}</span>
+                  <span className="mt-1 block text-[11px] leading-4 text-neutral-500">{item.description}</span>
+                </span>
+                <MaterialIcon name="chevron_right" className="text-sm text-neutral-300" />
+              </button>
+            ))}
           </div>
         </section>
 

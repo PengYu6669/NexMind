@@ -1,11 +1,10 @@
-import { randomBytes } from "crypto";
-import path from "path";
 import { after } from "next/server";
 import { NextResponse } from "next/server";
 import { getAuthUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { processKnowledgeSource } from "@/lib/knowledge-source-process";
 import { uploadChatFile } from "@/lib/tos-chat-upload";
+import { makeStorageFileName } from "@/lib/upload-file-name";
 
 const MAX_BYTES = 5 * 1024 * 1024;
 
@@ -19,11 +18,6 @@ const ALLOWED_PREFIX = [
   "text/csv",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 ];
-
-function safeBaseName(name: string): string {
-  const base = path.basename(name).replace(/[^\w.\-\u4e00-\u9fff]+/g, "_");
-  return base.slice(0, 120) || "file";
-}
 
 export async function POST(req: Request) {
   const user = await getAuthUser();
@@ -76,10 +70,7 @@ export async function POST(req: Request) {
   }
 
   const buf = Buffer.from(await file.arrayBuffer());
-  const ext = path.extname(file.name) || "";
-  const token = randomBytes(8).toString("hex");
-  const base = safeBaseName(path.basename(file.name, ext));
-  const storageFileName = `${Date.now()}-${token}-${base}${ext || ""}`;
+  const storageFileName = makeStorageFileName(file.name, "file");
 
   const out = await uploadChatFile({
     userId: user.id,

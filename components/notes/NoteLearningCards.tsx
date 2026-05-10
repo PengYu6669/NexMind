@@ -8,6 +8,9 @@ type LearningCardDto = {
   type: string;
   title: string;
   contentMd: string;
+  sources?: {
+    relatedNotes?: Array<{ noteId?: string; title?: string; distance?: number | null }>;
+  } | null;
   createdAt: string;
 };
 
@@ -307,6 +310,24 @@ export function NoteLearningCards({ noteId }: { noteId: string }) {
               <pre className="mt-3 whitespace-pre-wrap text-xs text-on-surface-variant leading-relaxed">
                 {c.contentMd}
               </pre>
+              {c.sources?.relatedNotes?.length ? (
+                <div className="mt-3 rounded-xl border border-black/10 bg-white/70 p-3">
+                  <div className="text-[10px] font-black uppercase tracking-widest text-slate-500">证据来源</div>
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {c.sources.relatedNotes.slice(0, 5).map((source) =>
+                      source.noteId ? (
+                        <a
+                          key={source.noteId}
+                          href={`/notes/${source.noteId}`}
+                          className="rounded-full border border-black/10 bg-white px-2.5 py-1 text-[11px] font-bold text-neutral-700 hover:border-black/30 hover:text-black"
+                        >
+                          {source.title || "无标题"}
+                        </a>
+                      ) : null,
+                    )}
+                  </div>
+                </div>
+              ) : null}
             </article>
           ))}
         </div>

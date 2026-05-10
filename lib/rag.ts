@@ -210,10 +210,19 @@ async function arkMultimodalEmbed(text: string): Promise<number[]> {
 }
 
 async function arkMultimodalEmbedMany(texts: string[]): Promise<number[][]> {
-  const out: number[][] = [];
-  for (const t of texts) {
-    out.push(await arkMultimodalEmbed(t));
+  const concurrency = Math.max(1, Math.min(4, Number.parseInt(process.env.AI_EMBEDDING_CONCURRENCY ?? "3", 10) || 3));
+  const out = new Array<number[]>(texts.length);
+  let cursor = 0;
+
+  async function worker() {
+    while (cursor < texts.length) {
+      const index = cursor;
+      cursor += 1;
+      out[index] = await arkMultimodalEmbed(texts[index]!);
+    }
   }
+
+  await Promise.all(Array.from({ length: Math.min(concurrency, texts.length) }, () => worker()));
   return out;
 }
 
@@ -224,6 +233,59 @@ export function stripHtmlToText(html: string): string {
     .replace(/<[^>]+>/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function htmlToStructuredText(html: string): string {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<h1[^>]*>([\s\S]*?)<\/h1>/gi, "\n\n# $1\n\n")
+    .replace(/<h2[^>]*>([\s\S]*?)<\/h2>/gi, "\n\n## $1\n\n")
+    .replace(/<h3[^>]*>([\s\S]*?)<\/h3>/gi, "\n\n### $1\n\n")
+    .replace(/<h4[^>]*>([\s\S]*?)<\/h4>/gi, "\n\n#### $1\n\n")
+    .replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, "\n- $1")
+    .replace(/<\/p>|<br\s*\/?>|<\/blockquote>/gi, "\n")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function withChunkContext(title: string, content: string): string {
+  const heading = [...content.matchAll(/^#{1,4}\s+(.+)$/gm)].at(-1)?.[1]?.trim();
+  return [`标题：${title}`, heading ? `所在小节：${heading}` : null, "", content]
+    .filter((x): x is string => typeof x === "string")
+    .join("\n")
+    .trim();
+}
+
+function keywordPattern(query: string): string | null {
+  const terms = Array.from(new Set(query.match(/[\p{L}\p{N}_-]{2,}/gu) ?? []))
+    .filter((x) => !/^\d+$/.test(x))
+    .sort((a, b) => b.length - a.length)
+    .slice(0, 4);
+  const best = terms[0]?.trim();
+  if (!best) return null;
+  return `%${best.replace(/[\\%_]/g, (m) => `\\${m}`)}%`;
+}
+
+function mergeRagHits(primary: RagHit[], fallback: RagHit[], topK: number): RagHit[] {
+  const out: RagHit[] = [];
+  const seen = new Set<string>();
+  for (const hit of [...primary, ...fallback]) {
+    const key = hit.chunkId || `${hit.noteId ?? ""}:${hit.sourceId ?? ""}:${hit.chunkIndex}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(hit);
+    if (out.length >= topK) break;
+  }
+  return out;
 }
 
 let ragSchemaPromise: Promise<void> | null = null;
@@ -436,7 +498,7 @@ export async function indexNoteForRag(params: {
   // 先清掉旧索引，保证更新内容后检索一致
   await prisma.$executeRawUnsafe(`DELETE FROM note_chunks WHERE user_id = $1 AND note_id = $2`, params.userId, params.noteId);
 
-  const textBase = stripHtmlToText(params.content);
+  const textBase = htmlToStructuredText(params.content);
   const fullText = `${params.title}\n\n${textBase}`.trim();
 
   const splitter = new RecursiveCharacterTextSplitter({
@@ -444,7 +506,10 @@ export async function indexNoteForRag(params: {
     chunkOverlap: 120,
   });
   const docs = await splitter.createDocuments([fullText]);
-  const chunks = docs.map((d) => d.pageContent.trim()).filter(Boolean).slice(0, 60);
+  const chunks = docs
+    .map((d) => withChunkContext(params.title, d.pageContent.trim()))
+    .filter(Boolean)
+    .slice(0, 60);
 
   if (!chunks.length) return { chunks: 0 };
 
@@ -615,6 +680,58 @@ export async function ragSearch(params: {
         topK
       )) as RagHit[]);
 
-  return rows ?? [];
+  const vectorRows = rows ?? [];
+  const pattern = keywordPattern(q);
+  if (!pattern || vectorRows.length >= topK) return vectorRows;
+
+  const lexicalRows = noteId
+    ? ((await prisma.$queryRawUnsafe(
+        `
+      SELECT
+        nc.note_id as "noteId",
+        NULL::text as "sourceId",
+        nc.id as "chunkId",
+        nc.chunk_index as "chunkIndex",
+        nc.content as "content",
+        0.98::float as "distance",
+        n.title as "noteTitle"
+      FROM note_chunks nc
+      JOIN "Note" n ON n.id = nc.note_id
+      WHERE nc.user_id = $1
+        AND n.archived = false
+        AND nc.note_id = $3
+        AND (n.title ILIKE $2 ESCAPE '\\' OR nc.content ILIKE $2 ESCAPE '\\')
+      ORDER BY nc.chunk_index ASC
+      LIMIT $4
+    `,
+        params.userId,
+        pattern,
+        noteId,
+        topK
+      )) as RagHit[])
+    : ((await prisma.$queryRawUnsafe(
+        `
+      SELECT
+        nc.note_id as "noteId",
+        NULL::text as "sourceId",
+        nc.id as "chunkId",
+        nc.chunk_index as "chunkIndex",
+        nc.content as "content",
+        0.98::float as "distance",
+        n.title as "noteTitle"
+      FROM note_chunks nc
+      JOIN "Note" n ON n.id = nc.note_id
+      WHERE nc.user_id = $1
+        AND n.archived = false
+        AND (n.title ILIKE $2 ESCAPE '\\' OR nc.content ILIKE $2 ESCAPE '\\')
+      ORDER BY n."updatedAt" DESC, nc.chunk_index ASC
+      LIMIT $3
+    `,
+        params.userId,
+        pattern,
+        topK
+      )) as RagHit[]);
+
+  return mergeRagHits(vectorRows, lexicalRows ?? [], topK);
 }
 

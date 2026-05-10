@@ -17,6 +17,35 @@ export function extractNoteRefIdsFromHtml(html: string): string[] {
   return [...ids];
 }
 
+function htmlToPlainText(html: string): string {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** 从正文中解析 Obsidian 风格的 [[笔记标题]] / [[笔记标题|别名]] */
+export function extractWikiLinkTitlesFromHtml(html: string): string[] {
+  if (!html) return [];
+  const plain = htmlToPlainText(html);
+  const titles = new Set<string>();
+  const re = /\[\[([^\]\n]{1,120})\]\]/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(plain)) !== null) {
+    const raw = (m[1] ?? "").split("|")[0]?.trim();
+    if (raw) titles.add(raw);
+  }
+  return [...titles];
+}
+
 export function isInternalNoteHref(href: string): boolean {
   return INTERNAL_NOTE_HREF.test(href.trim());
 }

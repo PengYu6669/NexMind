@@ -1,12 +1,26 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import { AppSidebar } from "@/components/layout/AppSidebar";
 import { AppTopBar } from "@/components/layout/AppTopBar";
 import { NextClawCommandBar } from "@/components/nextclaw/NextClawCommandBar";
 import { IntelligenceFeed, type IntelligenceFeedCard } from "@/components/nextclaw/IntelligenceFeed";
-import { NextClawTaskDesk } from "@/components/nextclaw/NextClawTaskDesk";
 import { consumeChatMessageSse } from "@/lib/chat-sse";
+
+const NextClawTaskDesk = dynamic(
+  () => import("@/components/nextclaw/NextClawTaskDesk").then((mod) => mod.NextClawTaskDesk),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex h-full min-h-0 flex-col rounded-2xl border border-black/10 bg-white p-3">
+        <div className="h-8 rounded-lg bg-black/[0.04]" />
+        <div className="mt-3 h-24 rounded-xl bg-black/[0.035]" />
+        <div className="mt-3 flex-1 rounded-xl bg-black/[0.03]" />
+      </div>
+    ),
+  },
+);
 
 /** 与 GET /api/nextclaw/feed 返回的 cards 项对齐（避免客户端依赖 Prisma 类型） */
 type ApiFeedCard = {
@@ -68,6 +82,8 @@ export function NextClawPageClient() {
 
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [commandBusy, setCommandBusy] = useState(false);
+  const firstSsePayloadRef = useRef(true);
+  const activeJobsSignatureRef = useRef("");
 
   const refreshFeed = useCallback(async () => {
     const r = await fetch("/api/nextclaw/feed", { credentials: "include" });
@@ -108,7 +124,9 @@ export function NextClawPageClient() {
     setFeedLoading(true);
     setFeedError(null);
     try {
-      const activeRes = await fetch("/api/chat/active?purpose=nextclaw", { credentials: "include" });
+      const activePromise = fetch("/api/chat/active?purpose=nextclaw", { credentials: "include" });
+      const feedPromise = refreshFeed();
+      const activeRes = await activePromise;
 
       if (activeRes.ok) {
         const a = (await activeRes.json()) as { conversationId?: string | null };
@@ -117,7 +135,7 @@ export function NextClawPageClient() {
         setFeedError("请先登录后使用 NextClaw。");
       }
 
-      await refreshFeed();
+      await feedPromise;
     } catch (e) {
       setFeedError(e instanceof Error ? e.message : "加载失败");
       setFeedCards([]);
@@ -169,7 +187,7 @@ export function NextClawPageClient() {
             const dataLine = (lines.find((x) => x.startsWith("data:")) ?? "").replace(/^data:\s*/, "").trim();
             if (!event || !dataLine) continue;
             if (event === "ping") continue;
-            let payload: any = null;
+            let payload: unknown = null;
             try {
               payload = JSON.parse(dataLine);
             } catch {
@@ -177,12 +195,32 @@ export function NextClawPageClient() {
             }
 
             if (event === "active_jobs") {
-              const jobs = Array.isArray(payload?.activeJobs) ? payload.activeJobs : [];
+              const activePayload =
+                payload && typeof payload === "object"
+                  ? (payload as { activeJobs?: unknown; pendingJobs?: unknown })
+                  : null;
+              const jobs = Array.isArray(activePayload?.activeJobs) ? activePayload.activeJobs : [];
+              const signature = JSON.stringify(
+                jobs.map((job) => {
+                  const j = job as {
+                    id?: unknown;
+                    status?: unknown;
+                    ui?: { progress?: unknown; currentStepLabel?: unknown };
+                  };
+                  return [j.id, j.status, j.ui?.progress, j.ui?.currentStepLabel];
+                }),
+              );
+              const isFirst = firstSsePayloadRef.current;
+              const changed = signature !== activeJobsSignatureRef.current;
+              firstSsePayloadRef.current = false;
+              activeJobsSignatureRef.current = signature;
               if (!cancelled) {
                 setActiveAgentJobs(jobs);
-                setPendingJobs(typeof payload?.pendingJobs === "number" ? payload.pendingJobs : 0);
-                // 任务状态变更时同步刷新学习卡片
-                refreshFeedRef.current().catch(() => {});
+                setPendingJobs(typeof activePayload?.pendingJobs === "number" ? activePayload.pendingJobs : 0);
+                // 首包只同步当前任务态；后续状态变化再刷新卡片，避免进页重复拉 feed。
+                if (!isFirst && changed) {
+                  refreshFeedRef.current().catch(() => {});
+                }
               }
             }
           }
@@ -244,9 +282,13 @@ export function NextClawPageClient() {
     () => activeAgentJobs.filter((j) => j.type !== "NOTE_EXTERNAL_INJECT"),
     [activeAgentJobs],
   );
+  const captureJobs = useMemo(
+    () => activeAgentJobs.filter((j) => j.type === "NOTE_EXTERNAL_INJECT"),
+    [activeAgentJobs],
+  );
 
   return (
-    <div className="h-[100dvh] min-h-0 overflow-hidden bg-surface">
+    <div className="h-[100dvh] min-h-0 overflow-hidden bg-[#fbfbfa] font-body text-black">
       <AppSidebar />
       <div className="flex h-full min-h-0 flex-col pl-64">
         <AppTopBar
@@ -260,8 +302,8 @@ export function NextClawPageClient() {
           }
         />
 
-        <div className="flex min-h-0 flex-1 overflow-hidden pt-16 pb-8">
-          <aside className="hidden min-h-0 w-[20%] min-w-[260px] max-w-[420px] flex-col overflow-hidden border-r border-outline-variant/10 bg-surface-container-lowest/20 lg:flex">
+        <div className="flex min-h-0 flex-1 overflow-hidden pb-6 pt-16">
+          <aside className="hidden min-h-0 w-[20%] min-w-[260px] max-w-[420px] flex-col overflow-hidden border-r border-black/10 bg-white lg:flex">
             {/* 控制台：占满左侧栏剩余空间 */}
             <div className="min-h-0 flex-1 overflow-hidden p-3">
               <NextClawTaskDesk
@@ -273,13 +315,13 @@ export function NextClawPageClient() {
             </div>
           </aside>
 
-          <main className="flex min-h-0 w-full flex-col overflow-hidden bg-surface-container-lowest/10">
+          <main className="flex min-h-0 w-full flex-col overflow-hidden bg-[#fbfbfa]">
             <IntelligenceFeed
               cards={feedLoading ? null : feedCards}
               loading={feedLoading}
               error={feedError}
               activeAgentJobs={feedLoading ? [] : workflowJobs}
-              graphJobs={feedLoading ? [] : activeAgentJobs}
+              graphJobs={feedLoading ? [] : captureJobs}
               pendingJobs={pendingJobs}
               selectedAgentJobId={selectedAgentJobId}
               onSelectAgentJob={(jobId) => setSelectedAgentJobId(jobId)}
