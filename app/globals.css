@@ -6,39 +6,39 @@
   --font-body: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "PingFang SC",
     "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", "Source Han Sans SC", Arial, sans-serif;
 
-  --color-background: #0b1326;
-  --color-surface: #0b1326;
-  --color-surface-dim: #0b1326;
-  --color-surface-bright: #31394d;
-  --color-surface-container: #171f33;
-  --color-surface-container-low: #131b2e;
-  --color-surface-container-lowest: #060e20;
-  --color-surface-container-high: #222a3d;
-  --color-surface-container-highest: #2d3449;
-  --color-surface-variant: #2d3449;
+  --color-background: #ffffff;
+  --color-surface: #ffffff;
+  --color-surface-dim: #ececea;
+  --color-surface-bright: #ffffff;
+  --color-surface-container: #f7f7f5;
+  --color-surface-container-low: #fbfbfa;
+  --color-surface-container-lowest: #ffffff;
+  --color-surface-container-high: #eeeeeb;
+  --color-surface-container-highest: #e6e6e2;
+  --color-surface-variant: #f1f1ee;
 
-  --color-on-background: #dae2fd;
-  --color-on-surface: #dae2fd;
-  --color-on-surface-variant: #c7c4d8;
+  --color-on-background: #000000;
+  --color-on-surface: #000000;
+  --color-on-surface-variant: #525252;
 
-  --color-primary: #c0c1ff;
-  --color-primary-container: #4b4dd8;
-  --color-on-primary: #1000a9;
-  --color-on-primary-container: #d9d8ff;
+  --color-primary: #000000;
+  --color-primary-container: #dceeb1;
+  --color-on-primary: #ffffff;
+  --color-on-primary-container: #000000;
 
-  --color-secondary: #b9c7e0;
-  --color-secondary-container: #3c4a5e;
-  --color-on-secondary-container: #abb9d2;
+  --color-secondary: #c8e6cd;
+  --color-secondary-container: #c8e6cd;
+  --color-on-secondary-container: #000000;
 
-  --color-tertiary: #ffb695;
-  --color-outline: #918fa1;
-  --color-outline-variant: #464555;
+  --color-tertiary: #ff3d8b;
+  --color-outline: #737373;
+  --color-outline-variant: #d8d8d4;
 
-  --color-error: #ffb4ab;
+  --color-error: #b42318;
 
-  --color-brand: #4f46e5;
-  --color-inverse-primary: #494bd6;
-  --color-primary-fixed-dim: #c0c1ff;
+  --color-brand: #000000;
+  --color-inverse-primary: #ffffff;
+  --color-primary-fixed-dim: #1f1f1f;
 }
 
 @layer base {
@@ -72,17 +72,17 @@
 }
 
 .glass-panel {
-  background: rgba(45, 52, 73, 0.6);
+  background: rgba(255, 255, 255, 0.72);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
 }
 
 .thinking-glow {
-  box-shadow: 0 0 20px rgba(192, 193, 255, 0.15);
+  box-shadow: 0 0 0 3px rgba(220, 238, 177, 0.55);
 }
 
 .glass-card {
-  background: rgba(45, 52, 73, 0.4);
+  background: rgba(255, 255, 255, 0.72);
   backdrop-filter: blur(12px);
 }
 
@@ -96,13 +96,13 @@
 
 .tech-grid {
   background-image:
-    linear-gradient(to right, rgba(192, 193, 255, 0.05) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(192, 193, 255, 0.05) 1px, transparent 1px);
+    linear-gradient(to right, rgba(0, 0, 0, 0.06) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(0, 0, 0, 0.06) 1px, transparent 1px);
   background-size: 40px 40px;
 }
 
 .tech-grid-dots {
-  background-image: radial-gradient(circle at 2px 2px, rgba(75, 77, 216, 0.05) 1px, transparent 0);
+  background-image: radial-gradient(circle at 2px 2px, rgba(0, 0, 0, 0.06) 1px, transparent 0);
   background-size: 32px 32px;
 }
 
@@ -150,13 +150,13 @@
 }
 
 .glass-panel-auth {
-  background: rgba(11, 19, 38, 0.4);
+  background: rgba(255, 255, 255, 0.78);
   backdrop-filter: blur(24px);
   -webkit-backdrop-filter: blur(24px);
 }
 
 .glow-button:hover {
-  box-shadow: 0 0 20px rgba(192, 193, 255, 0.2);
+  box-shadow: 0 0 0 3px rgba(220, 238, 177, 0.65);
 }
 
 /* Tiptap 基础排版（让标题/列表/引用/code 块等“看得出来”） */
@@ -166,6 +166,46 @@
   line-height: 1.65;
   font-size: 14px;
   background: transparent;
+}
+
+.note-markdown-editor .ProseMirror {
+  min-height: calc(100vh - 280px);
+  padding: 0 0 7rem;
+  font-size: 16px;
+  line-height: 1.78;
+  color: #171717;
+}
+
+.note-markdown-editor .ProseMirror p {
+  margin: 0.35rem 0;
+  min-height: 1.78em;
+}
+
+.note-markdown-editor .ProseMirror h1,
+.note-markdown-editor .ProseMirror h2,
+.note-markdown-editor .ProseMirror h3 {
+  color: #000;
+  letter-spacing: 0;
+}
+
+.note-markdown-editor .ProseMirror h1 {
+  margin-top: 1.7rem;
+  font-size: 1.85rem;
+}
+
+.note-markdown-editor .ProseMirror h2 {
+  margin-top: 1.45rem;
+  font-size: 1.45rem;
+}
+
+.note-markdown-editor .ProseMirror blockquote {
+  border-left-color: #111;
+  background: #f7f7f5;
+}
+
+.note-markdown-editor .ProseMirror pre {
+  border: 1px solid #e6e6e2;
+  background: #f7f7f5;
 }
 
 .ProseMirror p {
@@ -199,8 +239,8 @@
 .ProseMirror blockquote {
   margin: 0.75rem 0;
   padding: 0.25rem 0.75rem;
-  border-left: 3px solid rgba(192, 193, 255, 0.35);
-  background: rgba(192, 193, 255, 0.06);
+  border-left: 3px solid rgba(0, 0, 0, 0.18);
+  background: rgba(220, 238, 177, 0.28);
   border-radius: 0.5rem;
 }
 
@@ -210,7 +250,7 @@
 }
 
 .ProseMirror pre {
-  background: rgba(0, 0, 0, 0.25);
+  background: rgba(0, 0, 0, 0.06);
   padding: 0.75rem 0.85rem;
   border-radius: 0.75rem;
   overflow-x: auto;
@@ -261,8 +301,8 @@
 .chat-markdown blockquote {
   margin: 0.5rem 0;
   padding: 0.35rem 0.7rem;
-  border-left: 3px solid rgba(192, 193, 255, 0.35);
-  background: rgba(192, 193, 255, 0.06);
+  border-left: 3px solid rgba(0, 0, 0, 0.18);
+  background: rgba(220, 238, 177, 0.28);
   border-radius: 0.45rem;
 }
 
@@ -270,7 +310,7 @@
   margin: 0.5rem 0;
   padding: 0.65rem 0.75rem;
   border-radius: 0.65rem;
-  background: rgba(0, 0, 0, 0.2);
+  background: rgba(0, 0, 0, 0.06);
   overflow-x: auto;
 }
 
@@ -289,7 +329,7 @@
   z-index: 2;
   min-width: 10px;
   min-height: 10px;
-  background: rgba(192, 193, 255, 0.35);
-  border: 1px solid rgba(192, 193, 255, 0.55);
+  background: rgba(220, 238, 177, 0.75);
+  border: 1px solid rgba(0, 0, 0, 0.35);
   border-radius: 2px;
 }

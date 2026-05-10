@@ -6,6 +6,10 @@ import { NotesLibrarySidebar } from "@/components/notes/NotesLibrarySidebar";
 import { getAuthUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
+type NoteListItem = Awaited<ReturnType<typeof prisma.note.findMany>>[number] & {
+  tags: { tag: { name: string } }[];
+};
+
 function formatRelativeTime(when: Date): string {
   const diffMs = Date.now() - when.getTime();
   const diffMin = Math.floor(diffMs / 60000);
@@ -33,11 +37,11 @@ export default async function NotesLayout({ children }: { children: ReactNode })
     include: { tags: { include: { tag: true } } },
   });
 
-  const list = notes.map((note: any, idx: number) => ({
+  const list = (notes as NoteListItem[]).map((note, idx) => ({
     id: note.id,
     title: note.title,
     excerpt: note.excerpt ?? note.content.slice(0, 160),
-    tags: note.tags.map((nt: any) => nt.tag.name),
+    tags: note.tags.map((nt) => nt.tag.name),
     timeLabel: formatRelativeTime(note.updatedAt ?? note.createdAt),
     featured: note.pinned || idx === 0,
     folderId: note.folderId,
@@ -45,22 +49,17 @@ export default async function NotesLayout({ children }: { children: ReactNode })
   }));
 
   return (
-    <div className="min-h-screen bg-surface">
+    <div className="min-h-screen bg-[#fbfbfa] font-body text-black">
       <AppSidebar />
       <div className="flex min-h-screen flex-col pl-64">
         <AppTopBar />
         <div className="flex min-h-0 flex-1 pt-16">
-          <div className="flex min-h-0 w-full max-w-sm shrink-0 flex-col self-stretch border-r border-outline-variant/10 lg:max-w-[320px]">
-            <NotesLibrarySidebar
-              folders={folders}
-              notes={list}
-              className="min-h-0 flex-1 border-0"
-            />
+          <div className="flex min-h-0 w-full max-w-sm shrink-0 flex-col self-stretch border-r border-black/10 bg-white lg:max-w-[320px]">
+            <NotesLibrarySidebar folders={folders} notes={list} className="min-h-0 flex-1 border-0" />
           </div>
-          <div className="min-h-0 flex-1 bg-surface">{children}</div>
+          <div className="min-h-0 flex-1 bg-[#fbfbfa]">{children}</div>
         </div>
       </div>
     </div>
   );
 }
-

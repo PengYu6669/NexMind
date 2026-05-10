@@ -140,7 +140,7 @@ export async function POST(req: Request) {
       where: { id: { in: attachmentSourceIds }, userId: user.id },
       select: { id: true, conversationId: true },
     });
-    const ok = new Map(rows.map((r: any) => [r.id, r.conversationId]));
+    const ok = new Map(rows.map((r) => [r.id, r.conversationId]));
     for (const id of attachmentSourceIds) {
       if (!ok.has(id)) {
         return NextResponse.json({ error: "附件不存在或无权访问" }, { status: 403 });
@@ -157,7 +157,7 @@ export async function POST(req: Request) {
       select: { id: true, title: true, extractedText: true, parseStatus: true, parseError: true },
     });
     const parts = sources
-      .map((s: any, idx: number) => {
+      .map((s, idx: number) => {
         const text = (s.extractedText || "").trim().slice(0, 3500);
         if (text) {
           return `【附件 ${idx + 1}：${s.title}】\n${text}`;
@@ -222,7 +222,7 @@ export async function POST(req: Request) {
       const plain = stripHtmlToText(focusNote.content).slice(0, 12000);
       const focusHeader =
         `用户已选中笔记《${focusNote.title}》。请优先依据下方「正文摘录」作答，不要编造；可辅以「检索片段」对照。\n` +
-        `不要输出引用编号，不要输出“引用：[x]”这类格式。`;
+        `如果使用了检索片段，请在回答末尾用「依据」列出 1~3 条来源编号。`;
 
       let hits: Awaited<ReturnType<typeof ragSearch>> = [];
       try {
@@ -245,7 +245,7 @@ export async function POST(req: Request) {
       if (hits.length) {
         parts.push(
           `【与当前问题语义最接近的片段（供对照）】\n` +
-            hits.map((h, idx) => `[${idx + 1}]\n${h.content}`).join("\n\n")
+            hits.map((h, idx) => `[${idx + 1}] 笔记《${h.noteTitle || focusNote.title}》 · chunk ${h.chunkIndex + 1}\n${h.content}`).join("\n\n")
         );
       } else if (!plain) {
         parts.push(
@@ -263,8 +263,7 @@ export async function POST(req: Request) {
       });
       if (hits.length) {
         ragBlock =
-          "以下是从用户笔记与（如有）本会话附件中检索到的相关片段（仅供参考；回答时请优先基于这些片段，不要编造。\n" +
-          "不要输出引用编号，不要输出“引用：[x]”这类格式）：\n" +
+          "以下是从用户笔记与（如有）本会话附件中检索到的相关片段。回答时请优先基于这些片段，不要编造；如果使用了片段，请在回答末尾用「依据」列出 1~3 条来源编号：\n" +
           hits
             .map((h, idx) => {
               const title = h.sourceId
@@ -272,7 +271,7 @@ export async function POST(req: Request) {
                 : h.noteTitle
                   ? `笔记《${h.noteTitle}》`
                   : "（未命名）";
-              return `[${idx + 1}] ${title}\n${h.content}`;
+              return `[${idx + 1}] ${title} · chunk ${h.chunkIndex + 1}\n${h.content}`;
             })
             .join("\n\n");
       }
@@ -295,18 +294,16 @@ export async function POST(req: Request) {
 
   const defaultAssistant =
     "你是 NextClaw 的中文笔记 AI 助手。目标是帮助用户理解/整理/复习自己的笔记与知识库内容。\n" +
-    "要求：回答结构清晰、简洁但信息密度高；不编造，不确定就直说并提出需要补充的材料。\n" +
-    "不要输出引用编号，不要输出“引用：[x]”这类格式。";
+    "要求：回答结构清晰、简洁但信息密度高；不编造，不确定就直说并提出需要补充的材料。若使用了检索片段，请在末尾给出简短「依据」。";
   const focusAssistant = focusNote
     ? `你是 NextClaw 的中文笔记 AI 助手。用户正在针对笔记《${focusNote.title}》提问：\n` +
       `- 严格围绕该笔记已给出的正文/片段作答；信息不足时请直接说明缺口，不要臆测。\n` +
-      `- 不要输出引用编号，不要输出“引用：[x]”这类格式。`
+      `- 若使用了检索片段，请在末尾给出简短「依据」。`
     : defaultAssistant;
 
   const nextClawPrompt =
     "你是 NextClaw 智能笔记助手：根据下方知识库片段与用户输入，帮助用户复习、拓展学习、自测、列计划或整理草稿。\n" +
-    "要求：语气友好、少黑话；优先依据片段作答、不编造；尽量用短列表与可执行步骤；信息不足时说明缺口并建议补记哪类内容。\n" +
-    "不要输出引用编号，不要输出“引用：[x]”这类格式。";
+    "要求：语气友好、少黑话；优先依据片段作答、不编造；尽量用短列表与可执行步骤；信息不足时说明缺口并建议补记哪类内容。若使用了检索片段，请在末尾给出简短「依据」。";
 
   const systemPrompt = nextClawMode
     ? focusNote
@@ -341,7 +338,7 @@ export async function POST(req: Request) {
       role: "system" as const,
       content: systemContent,
     },
-    ...messages.map((m: any) => ({
+    ...messages.map((m) => ({
       role: mapToAiRole(m.role as "USER" | "ASSISTANT" | "SYSTEM"),
       content: m.content,
     })),

@@ -39,32 +39,24 @@ export function NextClawStatusPill() {
   return (
     <Link
       href="/nextclaw"
-      className="group flex max-w-[min(100%,14rem)] shrink-0 items-center gap-2 rounded-full border border-outline-variant/10 bg-surface-container-lowest/40 px-2.5 py-1.5 text-[10px] backdrop-blur-md transition-colors hover:border-primary/25 hover:bg-surface-container-low/50"
+      className="group flex max-w-[min(100%,15rem)] shrink-0 items-center gap-2 rounded-full border border-black/10 bg-[#f7f7f5] px-3 py-1.5 text-[10px] transition-colors hover:border-black hover:bg-white"
       title="打开 NextClaw 控制台"
     >
-      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary/15 text-primary">
-        <MaterialIcon name="hub" className="text-xs" />
+      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-black text-white">
+        <MaterialIcon name="hub" className="text-sm" />
       </span>
       <span className="min-w-0 flex flex-col gap-0 leading-tight">
-        <span className="truncate font-black uppercase tracking-wider text-outline/90">NextClaw</span>
+        <span className="truncate font-black uppercase tracking-[0.12em] text-black">NextClaw</span>
         {err ? (
-          <span className="text-[9px] text-on-surface-variant">状态不可用</span>
+          <span className="text-[9px] font-medium text-neutral-500">状态不可用</span>
         ) : due == null || jobs == null ? (
-          <span className="text-[9px] text-on-surface-variant">加载中…</span>
+          <span className="text-[9px] font-medium text-neutral-500">加载中...</span>
         ) : (
-          <span className="flex flex-wrap items-center gap-x-1.5 gap-y-0 text-[9px] text-on-surface-variant">
-            <span className="tabular-nums text-on-surface/90">今日复习 {due}</span>
-            <span className="text-outline-variant/50">·</span>
-            <span
-              className={`inline-flex items-center gap-0.5 tabular-nums ${
-                aiBusy ? "font-semibold text-primary" : "text-on-surface-variant"
-              }`}
-            >
-              <span
-                className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-                  aiBusy ? "animate-pulse bg-primary" : "bg-outline-variant/60"
-                }`}
-              />
+          <span className="flex flex-wrap items-center gap-x-1.5 gap-y-0 text-[9px] font-medium text-neutral-500">
+            <span className="tabular-nums text-neutral-700">今日复习 {due}</span>
+            <span className="text-neutral-300">/</span>
+            <span className={`inline-flex items-center gap-0.5 tabular-nums ${aiBusy ? "text-black" : ""}`}>
+              <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${aiBusy ? "animate-pulse bg-black" : "bg-neutral-300"}`} />
               {aiBusy ? `AI 运行 ${jobs}` : "AI 空闲"}
             </span>
           </span>

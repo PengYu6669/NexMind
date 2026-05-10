@@ -2,17 +2,28 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { MaterialIcon } from "@/components/ui/MaterialIcon";
 
 type AuthMode = "login" | "register";
 
 export function AuthCard({ mode }: { mode: AuthMode }) {
   const router = useRouter();
+  const endpoint = useMemo(() => (mode === "login" ? "/api/auth/login" : "/api/auth/register"), [mode]);
   const [showPassword, setShowPassword] = useState(false);
   const [showPassword2, setShowPassword2] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    const sensitiveKeys = ["password", "password2", "email", "remember", "name"];
+    const hasSensitiveQuery = sensitiveKeys.some((key) => url.searchParams.has(key));
+    if (!hasSensitiveQuery) return;
+    for (const key of sensitiveKeys) url.searchParams.delete(key);
+    const next = `${url.pathname}${url.search}${url.hash}`;
+    window.history.replaceState(window.history.state, "", next);
+  }, []);
 
   async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -31,7 +42,6 @@ export function AuthCard({ mode }: { mode: AuthMode }) {
         }
       }
 
-      const endpoint = mode === "login" ? "/api/auth/login" : "/api/auth/register";
       const payload: Record<string, unknown> = {
         email,
         password,
@@ -100,7 +110,7 @@ export function AuthCard({ mode }: { mode: AuthMode }) {
           </Link>
         </div>
 
-        <form className="space-y-6" onSubmit={onSubmit}>
+        <form className="space-y-6" method="post" action={endpoint} autoComplete="on" onSubmit={onSubmit}>
           {mode === "register" && (
             <div className="space-y-1.5">
               <label className="ml-1 block text-xs font-semibold text-on-surface-variant" htmlFor="name">

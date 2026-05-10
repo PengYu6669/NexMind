@@ -5,6 +5,18 @@ import { learningCardToFeedDto } from "@/lib/nextclaw-feed";
 import { buildTaskUiPayload } from "@/lib/nextclaw-task-ui";
 import { scheduleLearningJobsProcessing } from "@/lib/learning-jobs-kickoff";
 
+type FeedStepLike = { toolSummary?: string | null };
+type FeedJobUi = ReturnType<typeof buildTaskUiPayload> & {
+  generatedNotes?: { id: string; title: string }[];
+};
+type FeedJobItem = {
+  id: string;
+  status: string;
+  type: string;
+  noteTitle: string;
+  ui: FeedJobUi;
+};
+
 /** 智能流：跨笔记聚合学习卡片（对齐 PRD · Intelligence Feed） */
 export async function GET(req: Request) {
   const user = await getAuthUser();
@@ -13,13 +25,7 @@ export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const take = Math.min(50, Math.max(1, Number(searchParams.get("limit")) || 25));
 
-  let activeJobs: {
-    id: string;
-    status: string;
-    type: string;
-    noteTitle: string;
-    ui: ReturnType<typeof buildTaskUiPayload>;
-  }[] = [];
+  let activeJobs: FeedJobItem[] = [];
 
   try {
     const jobRows = await prisma.learningJob.findMany({
@@ -42,7 +48,7 @@ export async function GET(req: Request) {
         note: { select: { title: true } },
       },
     });
-    const uiByJob = jobRows.map((j: any) => ({
+    const uiByJob: FeedJobItem[] = jobRows.map((j) => ({
       id: j.id,
       status: j.status,
       type: j.type,
@@ -51,9 +57,9 @@ export async function GET(req: Request) {
     }));
     const noteIds = Array.from(
       new Set(
-        uiByJob.flatMap((j: any) =>
+        uiByJob.flatMap((j) =>
           (j.ui.steps ?? [])
-            .map((s: any) => (s.toolSummary ?? "").match(/noteId=([a-z0-9]+)/i)?.[1] ?? "")
+            .map((s: FeedStepLike) => (s.toolSummary ?? "").match(/noteId=([a-z0-9]+)/i)?.[1] ?? "")
             .filter(Boolean),
         ),
       ),
@@ -66,14 +72,14 @@ export async function GET(req: Request) {
       });
       for (const r of rows) titleMap.set(r.id, r.title || "（无标题）");
     }
-    activeJobs = uiByJob.map((j: any) => {
+    activeJobs = uiByJob.map((j) => {
       const generatedNotes = (j.ui.steps ?? [])
-        .map((s: any) => {
+        .map((s: FeedStepLike) => {
           const id = (s.toolSummary ?? "").match(/noteId=([a-z0-9]+)/i)?.[1];
           if (!id) return null;
           return { id, title: titleMap.get(id) ?? "（新笔记）" };
         })
-        .filter((x: any): x is { id: string; title: string } => Boolean(x));
+        .filter((x): x is { id: string; title: string } => Boolean(x));
       return {
         ...j,
         ui: {
@@ -97,6 +103,7 @@ export async function GET(req: Request) {
         type: true,
         title: true,
         contentMd: true,
+        sources: true,
         createdAt: true,
         note: { select: { title: true } },
       },
@@ -117,7 +124,7 @@ export async function GET(req: Request) {
     scheduleLearningJobsProcessing("feed-poll", 6);
   }
 
-  const noteIds = [...new Set(cardsRaw.map((c: any) => c.noteId))];
+  const noteIds = [...new Set(cardsRaw.map((c) => c.noteId))];
   const reviews = await prisma.reviewItem.findMany({
     where: { userId: user.id, noteId: { in: noteIds } },
     select: {
@@ -129,9 +136,9 @@ export async function GET(req: Request) {
       lastReviewedAt: true,
     },
   });
-  const reviewByNote = new Map<string, any>(reviews.map((r: any) => [r.noteId, r]));
+  const reviewByNote = new Map(reviews.map((r) => [r.noteId, r]));
 
-  const cards = cardsRaw.map((c: any) =>
+  const cards = cardsRaw.map((c) =>
     learningCardToFeedDto({
       id: c.id,
       noteId: c.noteId,
@@ -139,6 +146,7 @@ export async function GET(req: Request) {
       type: c.type,
       title: c.title,
       contentMd: c.contentMd,
+      sources: c.sources,
       createdAt: c.createdAt,
       review: c.type === "REVIEW" ? (reviewByNote.get(c.noteId) ?? null) : null,
     })

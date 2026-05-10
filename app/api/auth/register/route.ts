@@ -1,18 +1,14 @@
 import { NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
+import { readAuthRequestBody } from "@/lib/auth-request-body";
 
 export async function POST(req: Request) {
-  const body = (await req.json()) as {
-    email?: string;
-    password?: string;
-    name?: string;
-    remember?: boolean | string;
-  };
+  const body = await readAuthRequestBody(req);
 
-  const email = body.email?.trim().toLowerCase();
-  const password = body.password;
-  const name = body.name?.trim();
+  const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+  const password = typeof body.password === "string" ? body.password : "";
+  const name = typeof body.name === "string" ? body.name.trim() : "";
 
   if (!email || !password) {
     return NextResponse.json({ error: "缺少 email 或 password" }, { status: 400 });
@@ -27,17 +23,15 @@ export async function POST(req: Request) {
   }
 
   const passwordHash = await bcrypt.hash(password, 10);
-  const user = await prisma.user.create({
+  await prisma.user.create({
     data: {
       email,
       name: name || undefined,
       passwordHash,
       userSettings: { create: {} },
     },
-    select: { id: true, email: true },
+    select: { id: true },
   });
 
-  // 注册阶段只创建账号；登录时再发放 cookie，符合“注册后再登录”的预期流程。
   return NextResponse.json({ ok: true });
 }
-

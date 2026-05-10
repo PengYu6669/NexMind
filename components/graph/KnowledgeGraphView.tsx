@@ -9,6 +9,8 @@ import {
   forceLink,
   forceManyBody,
   forceSimulation,
+  forceX,
+  forceY,
   type Simulation,
   type SimulationLinkDatum,
   type SimulationNodeDatum,
@@ -101,9 +103,7 @@ export function KnowledgeGraphView() {
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      await fetchFolders();
-      await fetchGraph();
-      await fetchActiveJobs();
+      await Promise.all([fetchFolders(), fetchGraph(), fetchActiveJobs()]);
       if (cancelled) return;
     })();
     return () => {
@@ -140,7 +140,7 @@ export function KnowledgeGraphView() {
     kind?: GraphPayload["edges"][number]["kind"];
   };
 
-  type RenderNode = SimulationNodeDatum & FGNode & { bornAt: number };
+  type RenderNode = SimulationNodeDatum & FGNode & { bornAt: number; clusterX?: number; clusterY?: number };
   type RenderEdge = SimulationLinkDatum<RenderNode> & FGLink & { id: string; source: string | RenderNode; target: string | RenderNode };
 
   const graphData = useMemo(() => {
@@ -194,14 +194,72 @@ export function KnowledgeGraphView() {
       if (!linkMap.has(key)) linkMap.set(key, l);
     }
 
-    const now = Date.now();
-    const nodes = Array.from(nodeMap.values()).map((n) => ({ ...n, bornAt: now })) as RenderNode[];
     const links = Array.from(linkMap.values()).map((l) => ({
       ...l,
       id: `${String(l.source)}=>${String(l.target)}`,
       source: String(l.source),
       target: String(l.target),
     })) as RenderEdge[];
+
+    const now = Date.now();
+    const nodes = Array.from(nodeMap.values()).map((n) => ({ ...n, bornAt: now })) as RenderNode[];
+    const byId = new Map(nodes.map((n) => [n.id, n]));
+    const adjacency = new Map<string, Set<string>>();
+    for (const n of nodes) adjacency.set(n.id, new Set());
+    for (const l of links) {
+      const s = String(l.source);
+      const t = String(l.target);
+      if (!adjacency.has(s) || !adjacency.has(t)) continue;
+      adjacency.get(s)!.add(t);
+      adjacency.get(t)!.add(s);
+    }
+
+    const visited = new Set<string>();
+    const components: RenderNode[][] = [];
+    for (const node of nodes) {
+      if (visited.has(node.id)) continue;
+      const queue = [node.id];
+      const group: RenderNode[] = [];
+      visited.add(node.id);
+      while (queue.length) {
+        const id = queue.shift()!;
+        const current = byId.get(id);
+        if (current) group.push(current);
+        for (const nextId of adjacency.get(id) ?? []) {
+          if (visited.has(nextId)) continue;
+          visited.add(nextId);
+          queue.push(nextId);
+        }
+      }
+      components.push(group);
+    }
+
+    components.sort((a, b) => b.length - a.length);
+    const cols = Math.max(1, Math.ceil(Math.sqrt(components.length)));
+    const gapX = 360;
+    const gapY = 280;
+    components.forEach((group, componentIndex) => {
+      const col = componentIndex % cols;
+      const row = Math.floor(componentIndex / cols);
+      const clusterX = (col - (cols - 1) / 2) * gapX;
+      const clusterY = (row - Math.max(0, Math.ceil(components.length / cols) - 1) / 2) * gapY;
+      const radius = Math.max(70, Math.min(220, 42 + group.length * 12));
+      group.forEach((node, nodeIndex) => {
+        const angle = (Math.PI * 2 * nodeIndex) / Math.max(1, group.length);
+        const ring = group.length === 1 ? 0 : radius;
+        node.clusterX = clusterX;
+        node.clusterY = clusterY;
+        node.x = clusterX + Math.cos(angle) * ring;
+        node.y = clusterY + Math.sin(angle) * ring;
+        if (node.kind === "source") {
+          node.x = clusterX;
+          node.y = clusterY;
+          node.fx = clusterX;
+          node.fy = clusterY;
+        }
+      });
+    });
+
     return { nodes, links };
   }, [data, activeJobs]);
 
@@ -215,25 +273,27 @@ export function KnowledgeGraphView() {
           .distance((l) => {
             const s = l.source as RenderNode;
             const t = l.target as RenderNode;
-            if (s.kind === "source" || t.kind === "source") return 160;
-            if (s.kind === "theme" || t.kind === "theme") return 130;
-            return 112;
+            if (s.kind === "source" || t.kind === "source") return 150;
+            if (s.kind === "theme" || t.kind === "theme") return 124;
+            return 96 + Math.min(42, ((s.degree ?? 0) + (t.degree ?? 0)) * 4);
           })
-          .strength(0.36),
+          .strength(0.28),
       )
-      .force("charge", forceManyBody().strength(-430))
+      .force("charge", forceManyBody<RenderNode>().strength((n) => -260 - Math.min(220, (n.degree ?? 0) * 32)))
       .force(
         "collide",
         forceCollide<RenderNode>((n) => {
-          if (n.kind === "source") return 24;
-          if (n.kind === "theme") return 20;
-          return 16;
-        }).iterations(2),
+          if (n.kind === "source") return 34;
+          if (n.kind === "theme") return 30;
+          return 24 + Math.min(10, (n.degree ?? 0) * 2);
+        }).iterations(3),
       )
+      .force("x", forceX<RenderNode>((n) => n.clusterX ?? 0).strength(0.055))
+      .force("y", forceY<RenderNode>((n) => n.clusterY ?? 0).strength(0.055))
       .force("center", forceCenter(0, 0))
       .alpha(1)
-      .alphaDecay(0.08)
-      .velocityDecay(0.32);
+      .alphaDecay(0.075)
+      .velocityDecay(0.38);
     sim.on("tick", () => {
       if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
       rafRef.current = requestAnimationFrame(() => setTick((v) => v + 1));
@@ -291,13 +351,14 @@ export function KnowledgeGraphView() {
   const nodeStyle = (node: FGNode) => {
     const id = String(node.id || "");
     if (id.startsWith("source:")) {
-      return { color: "rgba(122,63,255,0.94)", glow: "rgba(122,63,255,0.55)", radius: 15 };
+      return { fill: "#111111", stroke: "#111111", label: "#111111", radius: 13 };
     }
     if (id.startsWith("theme:")) {
-      return { color: "rgba(167,106,255,0.86)", glow: "rgba(167,106,255,0.45)", radius: 12 };
+      return { fill: "#dceeb1", stroke: "#111111", label: "#111111", radius: 11 };
     }
-    if (node.nodeKind === "job") return { color: "rgba(139,92,246,0.92)", glow: "rgba(139,92,246,0.45)", radius: 11 };
-    return { color: "rgba(196,142,255,0.78)", glow: "rgba(196,142,255,0.4)", radius: 10 };
+    if (node.nodeKind === "job") return { fill: "#c8e6cd", stroke: "#111111", label: "#111111", radius: 10 };
+    const degree = Math.max(0, Number(node.degree ?? 0));
+    return { fill: "#ffffff", stroke: degree > 2 ? "#111111" : "#b8b8b2", label: "#343434", radius: Math.min(12, 7 + degree * 0.9) };
   };
 
   const toScreen = (x: number, y: number) => ({
@@ -310,7 +371,6 @@ export function KnowledgeGraphView() {
   });
 
   const handleWheel = (e: React.WheelEvent<SVGSVGElement>) => {
-    e.preventDefault();
     const delta = e.deltaY > 0 ? 0.92 : 1.08;
     const nextK = Math.max(0.45, Math.min(2.8, panZoom.k * delta));
     setPanZoom((p) => ({ ...p, k: nextK }));
@@ -359,25 +419,37 @@ export function KnowledgeGraphView() {
     for (const n of graphData.nodes) m.set(n.id, n);
     return m;
   }, [graphData.nodes]);
+  const adjacency = useMemo(() => {
+    const m = new Map<string, Set<string>>();
+    for (const n of graphData.nodes) m.set(n.id, new Set());
+    for (const l of graphData.links) {
+      const sid = String(typeof l.source === "object" ? (l.source as RenderNode).id : l.source);
+      const tid = String(typeof l.target === "object" ? (l.target as RenderNode).id : l.target);
+      if (!m.has(sid) || !m.has(tid)) continue;
+      m.get(sid)!.add(tid);
+      m.get(tid)!.add(sid);
+    }
+    return m;
+  }, [graphData.links, graphData.nodes]);
   const edgeKindLabel: Record<string, string> = { LINK: "引用", DERIVED_FROM: "衍生", PRODUCES: "生成", CONFLICT_HINT: "冲突" };
 
   return (
-    <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col bg-surface">
-      <header className="flex shrink-0 items-start justify-between gap-3 border-b border-outline-variant/10 bg-surface-container-low/25 px-5 py-4 backdrop-blur-sm">
+    <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col bg-[#fbfbfa] text-black">
+      <header className="flex shrink-0 items-start justify-between gap-3 border-b border-black/10 bg-white px-5 py-4">
         <div className="min-w-0 space-y-1">
           <div className="flex items-center gap-2">
-            <span className="flex size-8 shrink-0 items-center justify-center rounded-xl bg-primary/12 text-primary/90">
+            <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-black text-white">
               <MaterialIcon name="hub" className="text-lg" />
             </span>
             <h1 className="text-base font-bold tracking-tight text-on-surface/90">知识图谱</h1>
           </div>
           <p className="max-w-xl pl-10 text-[12px] leading-relaxed text-on-surface-variant/75">
-            仅展示笔记之间的关联关系，点击节点可直接跳转到笔记页。
+            仅展示真实引用关系，拖拽整理视图，双击节点打开对应笔记。
           </p>
         </div>
         <div className="flex shrink-0 flex-col items-end gap-2 sm:flex-row sm:items-center">
           <select
-            className="rounded-xl border border-outline-variant/15 bg-surface-container-highest/50 px-3 py-1.5 text-[11px] font-semibold text-on-surface/90 outline-none hover:border-primary/30"
+            className="rounded-full border border-black/10 bg-white px-3 py-1.5 text-[11px] font-semibold text-black outline-none transition-colors hover:border-black/30"
             value={folderId}
             onChange={(e) => setFolderId(e.target.value)}
             title="按文件夹筛选图谱"
@@ -391,13 +463,13 @@ export function KnowledgeGraphView() {
             ))}
           </select>
           {data ? (
-            <span className="rounded-full border border-outline-variant/10 bg-surface-container-highest/50 px-3 py-1.5 text-[11px] font-medium tabular-nums text-on-surface-variant/80">
+            <span className="rounded-full border border-black/10 bg-white px-3 py-1.5 text-[11px] font-medium tabular-nums text-neutral-500">
               {data.nodes.length} 节点 · {data.edges.length} 条边
             </span>
           ) : null}
           <button
             type="button"
-            className="inline-flex items-center gap-1.5 rounded-xl border border-outline-variant/15 bg-surface-container-highest/50 px-3 py-1.5 text-[11px] font-semibold text-on-surface/90 transition-colors hover:border-primary/30 hover:bg-primary/10 hover:text-primary"
+            className="inline-flex items-center gap-1.5 rounded-full border border-black/10 bg-white px-3 py-1.5 text-[11px] font-semibold text-black transition-colors hover:border-black/30 hover:bg-neutral-100 disabled:opacity-50"
             onClick={() => {
               setRefreshTick((t) => t + 1);
             }}
@@ -410,10 +482,7 @@ export function KnowledgeGraphView() {
       </header>
 
       <div className="relative min-h-0 flex-1 overflow-hidden">
-        <div
-          className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_75%_65%_at_50%_38%,rgba(124,58,237,0.1),transparent_60%)]"
-          aria-hidden
-        />
+        <div className="pointer-events-none absolute inset-0 tech-grid opacity-35" aria-hidden />
 
         {error ? (
           <div className="relative flex h-full flex-col items-center justify-center gap-2 p-6 text-center text-sm text-error">
@@ -461,7 +530,7 @@ export function KnowledgeGraphView() {
                   </feMerge>
                 </filter>
               </defs>
-              <rect x={0} y={0} width={viewport.width} height={viewport.height} fill="rgba(4,7,19,0.98)" />
+              <rect x={0} y={0} width={viewport.width} height={viewport.height} fill="#fbfbfa" />
               {graphData.links.map((l) => {
                 const l2 = l as unknown as RenderEdge;
                 const sid = String(typeof l2.source === "object" ? (l2.source as RenderNode).id : l2.source);
@@ -477,22 +546,23 @@ export function KnowledgeGraphView() {
                 const dy = pt.y - ps.y;
                 const curve = Math.min(24, Math.max(-24, (dx + dy) * 0.03));
                 const hover = hoverNodeId && (hoverNodeId === sid || hoverNodeId === tid);
+                const dimmed = hoverNodeId && !hover;
                 const kindLabel = edgeKindLabel[l2.kind ?? ""] ?? "";
                 return (
                   <g key={`${sid}=>${tid}`}>
                     <path
                       d={`M ${ps.x} ${ps.y} Q ${mx + curve} ${my - curve} ${pt.x} ${pt.y}`}
                       fill="none"
-                      stroke={hover ? "rgba(236,72,153,0.92)" : "rgba(196,142,255,0.45)"}
-                      strokeWidth={hover ? 2.2 : 1.4}
-                      opacity={hover ? 1 : 0.7}
+                      stroke={hover ? "#111111" : "#cfcfca"}
+                      strokeWidth={hover ? 1.8 : 1}
+                      opacity={hover ? 0.95 : dimmed ? 0.18 : 0.62}
                     />
                     {kindLabel && hover ? (
                       <text
                         x={mx + curve * 1.4}
                         y={my - curve * 1.4 - 4}
                         textAnchor="middle"
-                        fill="rgba(236,72,153,0.85)"
+                        fill="#111111"
                         fontSize={9}
                         fontWeight={600}
                       >
@@ -505,6 +575,8 @@ export function KnowledgeGraphView() {
               {graphData.nodes.map((n) => {
                 const p = toScreen(n.x ?? 0, n.y ?? 0);
                 const hover = hoverNodeId === n.id;
+                const nearHover = hoverNodeId ? adjacency.get(hoverNodeId)?.has(n.id) : false;
+                const dimmed = hoverNodeId && !hover && !nearHover;
                 const style = nodeStyle(n);
                 const age = Math.max(0, Date.now() + tick - n.bornAt);
                 const appear = Math.min(1, age / 280);
@@ -530,20 +602,21 @@ export function KnowledgeGraphView() {
                     <circle
                       cx={p.x}
                       cy={p.y}
-                      r={radius + (hover ? 2 : 0)}
-                      fill={style.color}
-                      opacity={0.45 + appear * 0.55}
-                      stroke={hover ? "rgba(255,255,255,0.95)" : "rgba(255,255,255,0.22)"}
-                      strokeWidth={hover ? 2 : 1}
-                      filter="url(#kgNodeGlow)"
+                      r={radius + (hover ? 2 : nearHover ? 1 : 0)}
+                      fill={style.fill}
+                      opacity={dimmed ? 0.28 : 0.65 + appear * 0.35}
+                      stroke={hover ? "#111111" : style.stroke}
+                      strokeWidth={hover ? 2 : 1.3}
+                      filter={hover ? "url(#kgNodeGlow)" : undefined}
                     />
                     <text
                       x={p.x}
                       y={p.y + radius + 12}
                       textAnchor="middle"
-                      fill={hover ? "rgba(255,255,255,0.98)" : "rgba(235,222,255,0.88)"}
+                      fill={hover ? "#111111" : style.label}
                       fontSize={11}
                       fontWeight={n.kind === "source" ? 700 : 500}
+                      opacity={dimmed ? 0.22 : 1}
                     >
                       {n.title ? (n.title.length > 12 ? n.title.slice(0, 11) + "…" : n.title) : ""}
                     </text>

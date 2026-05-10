@@ -15,7 +15,7 @@ export function CaptureModal({ open, onClose }: { open: boolean; onClose: () => 
   async function onSubmit() {
     setError(null);
     setLoading(true);
-    setProgress("启动抓取任务...");
+    setProgress("启动摄取任务...");
     setCreatedNotes(0);
     try {
       const res = await fetch("/api/capture?stream=1", {
@@ -44,10 +44,8 @@ export function CaptureModal({ open, onClose }: { open: boolean; onClose: () => 
 
         for (const raw of events) {
           const lines = raw.split("\n");
-          const eventLine = lines.find((x) => x.startsWith("event:")) ?? "";
-          const dataLine = lines.find((x) => x.startsWith("data:")) ?? "";
-          const event = eventLine.replace(/^event:\s*/, "").trim();
-          const payloadText = dataLine.replace(/^data:\s*/, "").trim();
+          const event = (lines.find((x) => x.startsWith("event:")) ?? "").replace(/^event:\s*/, "").trim();
+          const payloadText = (lines.find((x) => x.startsWith("data:")) ?? "").replace(/^data:\s*/, "").trim();
           if (!payloadText) continue;
           let payload: Record<string, unknown> = {};
           try {
@@ -57,7 +55,7 @@ export function CaptureModal({ open, onClose }: { open: boolean; onClose: () => 
           }
 
           if (event === "job_started") {
-            setProgress("任务已创建，准备抽取正文...");
+            setProgress("任务已创建，准备接收来源...");
           } else if (event === "step") {
             const step = payload.step as { label?: string; toolSummary?: string } | undefined;
             setProgress(step?.label ? String(step.label) : "处理中...");
@@ -66,10 +64,9 @@ export function CaptureModal({ open, onClose }: { open: boolean; onClose: () => 
             if (Number.isFinite(created)) setCreatedNotes(created);
             setProgress(`已生成 ${created} 篇分片笔记...`);
           } else if (event === "linked") {
-            setProgress("正在建立笔记关联边...");
+            setProgress("正在建立知识图谱关联边...");
           } else if (event === "completed" || event === "done") {
-            finalNoteId =
-              typeof payload.noteId === "string" && payload.noteId ? payload.noteId : finalNoteId;
+            finalNoteId = typeof payload.noteId === "string" && payload.noteId ? payload.noteId : finalNoteId;
             setProgress("完成，正在跳转...");
           } else if (event === "error") {
             throw new Error(typeof payload.error === "string" ? payload.error : "捕获失败");
@@ -77,9 +74,7 @@ export function CaptureModal({ open, onClose }: { open: boolean; onClose: () => 
         }
       }
 
-      if (!finalNoteId) {
-        throw new Error("未返回 noteId");
-      }
+      if (!finalNoteId) throw new Error("未返回 noteId");
       onClose();
       router.push(`/notes/${finalNoteId}`);
     } catch (e) {
@@ -92,21 +87,21 @@ export function CaptureModal({ open, onClose }: { open: boolean; onClose: () => 
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4">
-      <div className="w-full max-w-lg rounded-2xl border border-outline-variant/10 bg-surface-container-low p-5 shadow-[0_30px_80px_rgba(0,0,0,0.35)] backdrop-blur-xl">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/30 p-4">
+      <div className="w-full max-w-lg rounded-2xl border border-black bg-white p-5 shadow-[12px_12px_0_#000]">
         <div className="mb-4 flex items-center justify-between gap-3">
           <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary-container/20">
-              <MaterialIcon name="content_paste" className="text-primary" filled />
+            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-black text-white">
+              <MaterialIcon name="content_paste" filled />
             </div>
             <div>
-              <h2 className="font-headline text-lg font-bold">快速捕获</h2>
-              <p className="text-xs text-on-surface-variant">粘贴 URL 或文本片段，自动生成要点与标签。</p>
+              <h2 className="font-headline text-lg font-black text-black">快速捕获</h2>
+              <p className="text-xs leading-relaxed text-neutral-500">粘贴 URL 或文本片段，自动抽取正文、分片并生成关联笔记。</p>
             </div>
           </div>
           <button
             type="button"
-            className="rounded-lg p-2 text-slate-300 hover:bg-surface-container-high"
+            className="rounded-full p-2 text-neutral-500 hover:bg-[#f7f7f5] hover:text-black"
             onClick={onClose}
             aria-label="关闭"
           >
@@ -116,21 +111,24 @@ export function CaptureModal({ open, onClose }: { open: boolean; onClose: () => 
 
         <div className="space-y-3">
           <textarea
-            className="h-28 w-full resize-none rounded-xl border border-outline-variant/10 bg-surface-container-lowest px-4 py-3 text-sm text-on-surface placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-primary/30"
-            placeholder="例如： https://xxx.com 或直接粘贴一段文字内容..."
+            className="h-28 w-full resize-none rounded-xl border border-black/10 bg-[#f7f7f5] px-4 py-3 text-sm font-medium text-black placeholder:text-neutral-400 focus:border-black focus:bg-white focus:outline-none"
+            placeholder="例如：https://example.com/article 或直接粘贴一段文字内容..."
             value={input}
             onChange={(e) => setInput(e.target.value)}
           />
 
           {loading ? (
-            <div className="rounded-lg border border-outline-variant/15 bg-surface-container-lowest/40 px-3 py-2 text-xs text-on-surface-variant">
-              <div>{progress}</div>
-              <div className="mt-1 text-[11px] text-outline/75">已生成笔记：{createdNotes}</div>
+            <div className="rounded-xl border border-black/10 bg-[#fbfbfa] px-3 py-3 text-xs text-neutral-600">
+              <div className="flex items-center gap-2 font-semibold text-black">
+                <span className="h-2 w-2 rounded-full bg-black animate-pulse" />
+                {progress}
+              </div>
+              <div className="mt-2 text-[11px] text-neutral-500">已生成笔记：{createdNotes}</div>
             </div>
           ) : null}
 
           {error ? (
-            <p className="text-sm font-medium text-on-error-container" role="alert">
+            <p className="text-sm font-semibold text-error" role="alert">
               {error}
             </p>
           ) : null}
@@ -138,7 +136,7 @@ export function CaptureModal({ open, onClose }: { open: boolean; onClose: () => 
           <div className="flex items-center justify-end gap-3 pt-1">
             <button
               type="button"
-              className="rounded-xl border border-outline-variant/20 bg-surface-container-low px-4 py-2 text-sm font-medium text-on-surface-variant hover:bg-surface-container-high"
+              className="rounded-full border border-black/10 bg-white px-4 py-2 text-sm font-semibold text-neutral-600 hover:bg-[#f7f7f5]"
               onClick={onClose}
               disabled={loading}
             >
@@ -146,7 +144,7 @@ export function CaptureModal({ open, onClose }: { open: boolean; onClose: () => 
             </button>
             <button
               type="button"
-              className="rounded-xl bg-primary-container px-4 py-2 text-sm font-bold text-on-primary-container transition-colors hover:bg-primary-container/90 disabled:opacity-60"
+              className="rounded-full bg-black px-4 py-2 text-sm font-bold text-white transition-transform active:scale-[0.98] disabled:opacity-50"
               onClick={onSubmit}
               disabled={loading || !input.trim()}
             >
@@ -158,4 +156,3 @@ export function CaptureModal({ open, onClose }: { open: boolean; onClose: () => 
     </div>
   );
 }
-

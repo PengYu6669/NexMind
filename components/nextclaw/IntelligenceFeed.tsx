@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import dynamic from "next/dynamic";
 import {
   AlertTriangle,
   ArrowUpRight,
@@ -14,7 +15,18 @@ import {
   Trash2,
 } from "lucide-react";
 import { NextClawWorkflowGraph } from "@/components/nextclaw/NextClawWorkflowGraph";
-import { AgentOpsPanel } from "@/components/nextclaw/AgentOpsPanel";
+
+const AgentOpsPanel = dynamic(
+  () => import("@/components/nextclaw/AgentOpsPanel").then((mod) => mod.AgentOpsPanel),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex h-full items-center justify-center rounded-xl border border-black/10 bg-white text-xs text-neutral-500">
+        正在加载工作流视图...
+      </div>
+    ),
+  },
+);
 
 type FeedCardType = "conflict" | "external_update" | "review";
 type FeedDbType = "REVIEW" | "FILL_GAP" | "PITFALL" | "CONFLICT" | "RELATED" | "EXTERNAL" | "AUDIT";
@@ -28,10 +40,12 @@ export type IntelligenceFeedCard = {
   /** 覆盖徽标文案（如：冲突 / 踩坑 / 补位） */
   badgeLabel?: string;
   title: string;
+  contentMd?: string;
   summary: string;
   metaLeft: string;
   metaRight: string;
   chips?: string[];
+  sourceNotes?: { noteId: string; title: string; distance?: number | null }[];
   codeA?: string;
   codeB?: string;
   review?: { reviewItemId: string; progressLabel: string; dueLabel: string; prompt: string };
@@ -40,7 +54,7 @@ export type IntelligenceFeedCard = {
 function CardTypeBadge({ type, label }: { type: FeedCardType; label?: string }) {
   if (type === "conflict") {
     return (
-      <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-md border border-error/30 bg-error/10 px-2 py-1 text-[11px] font-bold text-error">
+      <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-md border border-red-200 bg-red-50 px-2 py-1 text-[11px] font-bold text-red-700">
         <AlertTriangle className="h-3.5 w-3.5" />
         {label ?? "冲突"}
       </span>
@@ -48,18 +62,39 @@ function CardTypeBadge({ type, label }: { type: FeedCardType; label?: string }) 
   }
   if (type === "external_update") {
     return (
-      <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-md border border-primary/20 bg-primary/10 px-2 py-1 text-[11px] font-bold text-primary">
+      <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-md border border-black/10 bg-[#f4ecd6] px-2 py-1 text-[11px] font-bold text-neutral-800">
         <ArrowUpRight className="h-3.5 w-3.5" />
         {label ?? "情报"}
       </span>
     );
   }
   return (
-    <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-md border border-tertiary/25 bg-tertiary/10 px-2 py-1 text-[11px] font-bold text-tertiary">
+    <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1 text-[11px] font-bold text-emerald-700">
       <Pin className="h-3.5 w-3.5" />
       {label ?? "复习"}
     </span>
   );
+}
+
+function cardActionMeta(card: IntelligenceFeedCard): { label: string; hint: string; tone: string } {
+  switch (card.dbType) {
+    case "REVIEW":
+      return { label: "开始自测", hint: "用自己的话回答，再让 AI 评分", tone: "bg-emerald-50 text-emerald-700 border-emerald-200" };
+    case "FILL_GAP":
+      return { label: "补一句", hint: "把缺失概念补回原笔记", tone: "bg-[#f4ecd6] text-neutral-800 border-black/10" };
+    case "PITFALL":
+      return { label: "避坑核对", hint: "确认这里是不是你的易错点", tone: "bg-red-50 text-red-700 border-red-200" };
+    case "CONFLICT":
+      return { label: "核对冲突", hint: "展开查看两段说法的差异", tone: "bg-red-50 text-red-700 border-red-200" };
+    case "RELATED":
+      return { label: "建立关联", hint: "把它和已有笔记连起来", tone: "bg-blue-50 text-blue-700 border-blue-200" };
+    case "AUDIT":
+      return { label: "审计确认", hint: "检查证据与结论是否可靠", tone: "bg-violet-50 text-violet-700 border-violet-200" };
+    case "EXTERNAL":
+      return { label: "阅读补充", hint: "快速吸收外部新增信息", tone: "bg-blue-50 text-blue-700 border-blue-200" };
+    default:
+      return { label: "查看卡片", hint: "展开后继续处理", tone: "bg-[#f7f7f5] text-neutral-700 border-black/10" };
+  }
 }
 
 function InlineAsk({
@@ -392,14 +427,14 @@ export function IntelligenceFeed({
             </p>
             {error ? <p className="mt-2 text-xs text-error">{error}</p> : null}
             {!loading ? (
-              <div className="mt-2 flex flex-wrap gap-1.5">
+              <div className="mt-3 flex flex-wrap gap-1.5">
                 <button
                   type="button"
                   onClick={() => setActiveFilter("__all__")}
-                  className={`rounded-md border px-2 py-1 text-[11px] font-bold transition-colors ${
+                  className={`rounded-full border px-3 py-1.5 text-[11px] font-bold transition-colors ${
                     activeFilter === "__all__"
-                      ? "border-primary/35 bg-primary/15 text-primary"
-                      : "border-outline-variant/20 bg-surface-container-low/40 text-on-surface-variant hover:bg-surface-container-low/60"
+                      ? "border-black bg-black text-white"
+                      : "border-black/10 bg-white text-neutral-600 hover:border-black/20 hover:bg-[#f7f7f5]"
                   }`}
                 >
                   全部（{localCards.length}）
@@ -412,10 +447,10 @@ export function IntelligenceFeed({
                       key={f.key}
                       type="button"
                       onClick={() => setActiveFilter((prev) => (prev === f.key ? "__all__" : f.key))}
-                      className={`rounded-md border px-2 py-1 text-[11px] font-bold transition-colors ${
+                      className={`rounded-full border px-3 py-1.5 text-[11px] font-bold transition-colors ${
                         active
-                          ? "border-primary/35 bg-primary/15 text-primary"
-                          : "border-outline-variant/20 bg-surface-container-low/40 text-on-surface-variant hover:bg-surface-container-low/60"
+                          ? "border-black bg-black text-white"
+                          : "border-black/10 bg-white text-neutral-600 hover:border-black/20 hover:bg-[#f7f7f5]"
                       }`}
                     >
                       {f.label}（{count}）
@@ -426,7 +461,7 @@ export function IntelligenceFeed({
                   type="button"
                   onClick={() => void deleteAllCards()}
                   disabled={deleting === "__all__" || localCards.length === 0}
-                  className="rounded-md border border-error/25 bg-error/10 px-2 py-1 text-[11px] font-bold text-error transition-colors hover:bg-error/15 disabled:opacity-40"
+                  className="rounded-full border border-red-200 bg-white px-3 py-1.5 text-[11px] font-bold text-red-600 transition-colors hover:bg-red-50 disabled:opacity-40"
                 >
                   {deleting === "__all__" ? "清空中…" : "全删"}
                 </button>
@@ -521,7 +556,7 @@ export function IntelligenceFeed({
           </div>
         ) : null}
 
-        {(graphJobs?.length ?? 0) > 0 || (pendingJobs ?? 0) > 0 ? (
+        {(graphJobs?.length ?? 0) > 0 ? (
           <div className="shrink-0 rounded-2xl border border-outline-variant/12 bg-surface-container-low/20 p-2">
             <div className="h-[62vh] min-h-[560px] overflow-hidden rounded-xl">
               <AgentOpsPanel
@@ -554,25 +589,29 @@ export function IntelligenceFeed({
         ) : null}
 
         {localCards.length > 0 ? (
-        <div className="shrink-0 space-y-2">
+        <div className="shrink-0 space-y-3">
           {filteredData.map((c) => {
           const open = !!askOpen[c.id];
           const isExpanded = !!expanded[c.id];
           const hasDetails = !!(c.chips?.length || c.codeA || c.codeB || c.review);
+          const action = cardActionMeta(c);
           return (
             <article
               key={c.id}
-              className="group rounded-2xl border border-outline-variant/12 bg-[#060e20]/60 p-4 shadow-[0_14px_38px_rgba(0,0,0,0.22)] transition-colors hover:border-outline-variant/20 hover:bg-[#060e20]/75"
+              className="group rounded-xl border border-black/10 bg-white p-4 shadow-sm transition-colors hover:border-black/25"
             >
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
+              <div className="flex items-start justify-between gap-4">
+                <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
                     <CardTypeBadge type={c.type} label={c.badgeLabel} />
-                    <h3 className="truncate font-headline text-sm font-extrabold tracking-tight text-on-surface">
-                      {c.title}
-                    </h3>
+                    <span className={`rounded-md border px-2 py-1 text-[11px] font-bold ${action.tone}`}>
+                      {action.label}
+                    </span>
                   </div>
-                  <div className="mt-1 flex items-center gap-2 text-[10px] font-medium text-outline/80">
+                  <h3 className="mt-2 font-headline text-base font-extrabold leading-snug tracking-tight text-neutral-950">
+                    {c.title}
+                  </h3>
+                  <div className="mt-1 flex flex-wrap items-center gap-2 text-[10px] font-medium text-neutral-500">
                     <span>{c.metaLeft}</span>
                     <span className="opacity-40">·</span>
                     <span>{c.metaRight}</span>
@@ -584,28 +623,26 @@ export function IntelligenceFeed({
                     type="button"
                     onClick={() => void deleteCard(c.id)}
                     disabled={deleting === c.id}
-                    className="inline-flex items-center gap-1 whitespace-nowrap rounded-lg border border-error/20 bg-error/5 px-2 py-1.5 text-[11px] font-bold text-error/90 transition-colors hover:bg-error/10 disabled:opacity-40"
+                    className="inline-flex items-center gap-1 whitespace-nowrap rounded-lg border border-red-200 bg-white px-2 py-1.5 text-[11px] font-bold text-red-600 transition-colors hover:bg-red-50 disabled:opacity-40"
                     aria-label="删除卡片"
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                     {deleting === c.id ? "删除中" : "删除"}
                   </button>
-                  {hasDetails ? (
-                    <button
-                      type="button"
-                      onClick={() => setExpanded((s) => ({ ...s, [c.id]: !s[c.id] }))}
-                      className="inline-flex items-center gap-1 whitespace-nowrap rounded-lg border border-outline-variant/12 bg-surface-container-low/35 px-2 py-1.5 text-[11px] font-bold text-on-surface-variant transition-colors hover:border-primary/25 hover:bg-surface-container-low/50"
-                      aria-label={isExpanded ? "收起详情" : "展开详情"}
-                    >
-                      {isExpanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
-                      {isExpanded ? "收起" : "展开"}
-                    </button>
-                  ) : null}
+                  <button
+                    type="button"
+                    onClick={() => setExpanded((s) => ({ ...s, [c.id]: !s[c.id] }))}
+                    className="inline-flex items-center gap-1 whitespace-nowrap rounded-lg border border-black/10 bg-white px-2 py-1.5 text-[11px] font-bold text-neutral-600 transition-colors hover:border-black/20 hover:bg-[#f7f7f5] hover:text-black"
+                    aria-label={isExpanded ? "收起详情" : "展开详情"}
+                  >
+                    {isExpanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                    {isExpanded ? "收起" : "展开"}
+                  </button>
 
                   <button
                     type="button"
                     onClick={() => setAskOpen((s) => ({ ...s, [c.id]: !s[c.id] }))}
-                    className="inline-flex items-center gap-1 whitespace-nowrap rounded-lg border border-outline-variant/12 bg-surface-container-low/35 px-2.5 py-1.5 text-sm font-bold text-on-surface-variant opacity-0 transition-all hover:border-primary/25 hover:bg-surface-container-low/50 hover:text-on-surface group-hover:opacity-100 focus:opacity-100"
+                    className="inline-flex items-center gap-1 whitespace-nowrap rounded-lg border border-black/10 bg-white px-2.5 py-1.5 text-sm font-bold text-neutral-600 opacity-0 transition-all hover:border-black/20 hover:bg-[#f7f7f5] hover:text-black group-hover:opacity-100 focus:opacity-100"
                     aria-label="追问"
                   >
                     <MessageSquarePlus className="h-3.5 w-3.5" />
@@ -614,11 +651,40 @@ export function IntelligenceFeed({
                 </div>
               </div>
 
-              <p className="mt-2.5 text-sm leading-relaxed text-on-surface-variant">{c.summary}</p>
+              <div className="mt-3 rounded-lg border border-black/10 bg-[#fbfbfa] px-3 py-2">
+                <div className="text-[10px] font-black uppercase text-neutral-400">下一步</div>
+                <div className="mt-1 text-xs font-semibold leading-5 text-neutral-700">{action.hint}</div>
+              </div>
+
+              <p className="mt-3 line-clamp-3 text-sm leading-7 text-neutral-700">{c.summary}</p>
 
               {!isExpanded && hasDetails ? (
-                <div className="mt-2 text-[11px] text-outline/70">
-                  点击「展开」查看代码对比与补位建议。
+                <div className="mt-2 text-[11px] font-medium text-neutral-500">
+                  展开后处理细节、自测题或证据片段。
+                </div>
+              ) : null}
+
+              {isExpanded ? (
+                <div className="mt-3 rounded-xl border border-black/10 bg-white p-3">
+                  <div className="text-[10px] font-black uppercase text-neutral-400">卡片正文</div>
+                  <p className="mt-1 whitespace-pre-wrap text-xs leading-6 text-neutral-700">{c.contentMd ?? c.summary}</p>
+                </div>
+              ) : null}
+
+              {isExpanded && c.sourceNotes?.length ? (
+                <div className="mt-3 rounded-xl border border-black/10 bg-[#fbfbfa] p-3">
+                  <div className="text-[10px] font-black uppercase text-neutral-400">证据来源</div>
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {c.sourceNotes.map((source) => (
+                      <a
+                        key={source.noteId}
+                        href={`/notes/${source.noteId}`}
+                        className="rounded-full border border-black/10 bg-white px-2.5 py-1 text-[11px] font-bold text-neutral-700 transition-colors hover:border-black/30 hover:text-black"
+                      >
+                        {source.title}
+                      </a>
+                    ))}
+                  </div>
                 </div>
               ) : null}
 
@@ -638,17 +704,17 @@ export function IntelligenceFeed({
               {isExpanded && (c.codeA || c.codeB) ? (
                 <div className="mt-3.5 grid grid-cols-1 gap-2 md:grid-cols-2">
                   {c.codeA ? (
-                    <div className="rounded-xl border border-error/20 bg-error/5 p-3">
-                      <div className="mb-1 text-[10px] font-bold uppercase tracking-wider text-error/80">冲突片段</div>
-                      <pre className="overflow-x-auto text-[11px] leading-relaxed text-error/90">
+                    <div className="rounded-xl border border-red-200 bg-red-50/60 p-3">
+                      <div className="mb-1 text-[10px] font-bold uppercase tracking-wider text-red-700">冲突片段</div>
+                      <pre className="overflow-x-auto text-[11px] leading-relaxed text-red-800">
                         <code>{c.codeA}</code>
                       </pre>
                     </div>
                   ) : null}
                   {c.codeB ? (
-                    <div className="rounded-xl border border-primary/15 bg-primary/5 p-3">
-                      <div className="mb-1 text-[10px] font-bold uppercase tracking-wider text-primary/80">修复候选</div>
-                      <pre className="overflow-x-auto text-[11px] leading-relaxed text-primary/90">
+                    <div className="rounded-xl border border-black/10 bg-[#f7f7f5] p-3">
+                      <div className="mb-1 text-[10px] font-bold uppercase tracking-wider text-neutral-700">修复候选</div>
+                      <pre className="overflow-x-auto text-[11px] leading-relaxed text-neutral-800">
                         <code>{c.codeB}</code>
                       </pre>
                     </div>
@@ -657,12 +723,12 @@ export function IntelligenceFeed({
               ) : null}
 
               {isExpanded && c.review ? (
-                <div className="mt-3.5 rounded-xl border border-outline-variant/12 bg-surface-container-low/30 p-4">
+                <div className="mt-3.5 rounded-xl border border-black/10 bg-[#fbfbfa] p-4">
                   <div className="flex items-center justify-between gap-3">
                     <div className="text-[11px] font-bold text-on-surface-variant">当前掌握进度</div>
                     <div className="text-[11px] font-black text-primary">{c.review.progressLabel}</div>
                   </div>
-                  <div className="mt-3 rounded-lg border border-outline-variant/10 bg-surface-container-lowest/30 p-3 text-xs text-on-surface-variant">
+                  <div className="mt-3 rounded-lg border border-black/10 bg-white p-3 text-xs text-neutral-600">
                     <div className="text-[11px] font-bold text-on-surface">自测题</div>
                     <div className="mt-1 text-[12px] leading-relaxed">{c.review.prompt}</div>
                     <div className="mt-2 text-[10px] text-outline/70">{c.review.dueLabel}</div>
@@ -673,14 +739,14 @@ export function IntelligenceFeed({
                         onChange={(e) => setAnswerByCardId((m) => ({ ...m, [c.id]: e.target.value }))}
                         rows={3}
                         placeholder="用你自己的话回答…（越具体越好）"
-                        className="min-h-[72px] w-full resize-none rounded-lg border border-outline-variant/15 bg-surface-container-lowest/40 px-3 py-2 text-xs leading-relaxed text-on-surface outline-none focus:ring-1 focus:ring-primary/25"
+                        className="min-h-[72px] w-full resize-none rounded-lg border border-black/10 bg-white px-3 py-2 text-xs leading-relaxed text-neutral-900 outline-none focus:ring-1 focus:ring-black/20"
                       />
                       <div className="mt-2 flex items-center justify-between gap-3">
                         <button
                           type="button"
                           disabled={isDemo || !!aiBusyByCardId[c.id]}
                           onClick={() => submitReviewAnswer(c.id, c.review!.reviewItemId)}
-                          className="rounded-lg bg-primary-container px-3 py-2 text-[11px] font-bold text-on-primary-container transition-colors hover:bg-primary-container/90 disabled:cursor-not-allowed disabled:opacity-50"
+                          className="rounded-lg bg-black px-3 py-2 text-[11px] font-bold text-white transition-colors hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           {aiBusyByCardId[c.id] ? "AI 评分中…" : "提交并 AI 评分"}
                         </button>
@@ -692,7 +758,7 @@ export function IntelligenceFeed({
                       ) : null}
 
                       {aiResultByCardId[c.id] ? (
-                        <div className="mt-3 rounded-lg border border-outline-variant/10 bg-surface-container-low/30 p-3">
+                        <div className="mt-3 rounded-lg border border-black/10 bg-[#f7f7f5] p-3">
                           <div className="text-[10px] font-bold text-on-surface-variant">AI 解析结果</div>
                           <div className="mt-1 text-[11px] font-bold text-primary">
                             评分：{aiResultByCardId[c.id]?.lastScore}/5
