@@ -12,8 +12,10 @@ export type AgentPolicy = {
  * 后续可映射到 LangGraph node/edge 的运行策略。
  */
 export const NEXTCLAW_AGENT_POLICY: Record<AgentRole, AgentPolicy> = {
+  supervisor: { role: "supervisor", enabled: true, maxRetries: 0, degradeOnFailure: false },
   planner: { role: "planner", enabled: true, maxRetries: 1, degradeOnFailure: false },
   retriever: { role: "retriever", enabled: true, maxRetries: 2, degradeOnFailure: true },
+  source_analyst: { role: "source_analyst", enabled: true, maxRetries: 1, degradeOnFailure: true },
   auditor: { role: "auditor", enabled: true, maxRetries: 1, degradeOnFailure: true },
   coach: { role: "coach", enabled: true, maxRetries: 1, degradeOnFailure: false },
   scheduler: { role: "scheduler", enabled: true, maxRetries: 0, degradeOnFailure: false },

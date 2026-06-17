@@ -73,7 +73,23 @@ export function NextClawPageClient() {
         headline: string;
         progress: number;
         currentStepLabel: string | null;
-        steps: { id: string; label: string; status: string; toolSummary?: string }[];
+        steps: {
+          id: string;
+          label: string;
+          status: string;
+          toolSummary?: string;
+          meta?: {
+            agentRole?: string;
+            inputSummary?: string;
+            outputSummary?: string;
+            handoffTo?: string;
+            durationMs?: number;
+            candidateCount?: number;
+            parallelTasks?: number;
+            toolDomain?: string;
+            communication?: string[];
+          };
+        }[];
         generatedNotes?: { id: string; title: string }[];
       };
     }[]
@@ -103,7 +119,23 @@ export function NextClawPageClient() {
           headline: string;
           progress: number;
           currentStepLabel: string | null;
-          steps: { id: string; label: string; status: string; toolSummary?: string }[];
+          steps: {
+            id: string;
+            label: string;
+            status: string;
+            toolSummary?: string;
+            meta?: {
+              agentRole?: string;
+              inputSummary?: string;
+              outputSummary?: string;
+              handoffTo?: string;
+              durationMs?: number;
+              candidateCount?: number;
+              parallelTasks?: number;
+              toolDomain?: string;
+              communication?: string[];
+            };
+          }[];
           generatedNotes?: { id: string; title: string }[];
         };
       }[];

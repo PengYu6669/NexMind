@@ -8,7 +8,7 @@ import {
   NEXTCLAW_MCP_TOOL_WEB_SEARCH,
 } from "@/lib/nextclaw-mcp-constants";
 
-const MCP_TOOL_NAMES = [
+export const MCP_TOOL_NAMES = [
   NEXTCLAW_MCP_TOOL_READ_NOTE,
   NEXTCLAW_MCP_TOOL_SEMANTIC_SEARCH,
   NEXTCLAW_MCP_TOOL_WEB_SEARCH,
@@ -18,9 +18,14 @@ const MCP_TOOL_NAMES = [
 
 export type NextClawMcpToolName = (typeof MCP_TOOL_NAMES)[number];
 
-let client: Client | null = null;
-/** 串行化 JSON-RPC，避免同一 stdio 上并发；同时保证 client 懒加载无竞态 */
-let rpcChain: Promise<unknown> = Promise.resolve();
+type McpToolDomain = "knowledge" | "web" | "audit";
+
+type DomainSlot = {
+  client: Client | null;
+  rpcChain: Promise<unknown>;
+};
+
+const domainSlots = new Map<string, DomainSlot>();
 
 function isMcpGloballyEnabled(): boolean {
   const v = process.env.NEXTCLAW_MCP_ENABLED?.trim().toLowerCase();
@@ -66,26 +71,43 @@ async function createConnectedClient(): Promise<Client> {
   return c;
 }
 
-async function getOrCreateClient(): Promise<Client> {
-  if (client) return client;
-  client = await createConnectedClient();
-  return client;
+function domainOfTool(toolName: NextClawMcpToolName): McpToolDomain {
+  if (toolName === NEXTCLAW_MCP_TOOL_WEB_SEARCH || toolName === NEXTCLAW_MCP_TOOL_FETCH_URL) return "web";
+  if (toolName === NEXTCLAW_MCP_TOOL_AUDIT_CONTENT) return "audit";
+  return "knowledge";
 }
 
-async function resetClient(): Promise<void> {
-  if (client) {
+function getSlot(channelKey: string): DomainSlot {
+  const existing = domainSlots.get(channelKey);
+  if (existing) return existing;
+  const created: DomainSlot = { client: null, rpcChain: Promise.resolve() };
+  domainSlots.set(channelKey, created);
+  return created;
+}
+
+async function getOrCreateClient(channelKey: string): Promise<Client> {
+  const slot = getSlot(channelKey);
+  if (slot.client) return slot.client;
+  slot.client = await createConnectedClient();
+  return slot.client;
+}
+
+async function resetClient(channelKey: string): Promise<void> {
+  const slot = getSlot(channelKey);
+  if (slot.client) {
     try {
-      await client.close();
+      await slot.client.close();
     } catch {
       /* ignore */
     }
-    client = null;
+    slot.client = null;
   }
 }
 
-function enqueueRpc<T>(fn: () => Promise<T>): Promise<T> {
-  const run = rpcChain.then(fn, fn);
-  rpcChain = run.then(
+function enqueueRpc<T>(channelKey: string, fn: () => Promise<T>): Promise<T> {
+  const slot = getSlot(channelKey);
+  const run = slot.rpcChain.then(fn, fn);
+  slot.rpcChain = run.then(
     () => undefined,
     () => undefined
   );
@@ -102,15 +124,18 @@ export function nextClawMcpKnowledgeEnabled(): boolean {
  */
 export async function callNextClawKnowledgeTool(
   toolName: NextClawMcpToolName,
-  args: Record<string, unknown>
+  args: Record<string, unknown>,
+  options?: { channelKey?: string }
 ): Promise<{ ok: boolean; text: string; json: unknown | null; isError: boolean }> {
   if (!isMcpGloballyEnabled()) {
     throw new Error("NEXTCLAW_MCP_ENABLED is not set");
   }
 
-  return enqueueRpc(async () => {
+  const domain = domainOfTool(toolName);
+  const channelKey = options?.channelKey?.trim() || domain;
+  return enqueueRpc(channelKey, async () => {
     try {
-      const c = await getOrCreateClient();
+      const c = await getOrCreateClient(channelKey);
       const res = await c.callTool({
         name: toolName,
         arguments: args,
@@ -137,7 +162,7 @@ export async function callNextClawKnowledgeTool(
         isError: !!res.isError,
       };
     } catch (e) {
-      await resetClient();
+      await resetClient(channelKey);
       throw e;
     }
   });

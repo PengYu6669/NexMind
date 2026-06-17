@@ -159,7 +159,23 @@ export type IntelligenceFeedAgentJob = {
     headline: string;
     progress: number;
     currentStepLabel: string | null;
-    steps: { id: string; label: string; status: string; toolSummary?: string }[];
+    steps: {
+      id: string;
+      label: string;
+      status: string;
+      toolSummary?: string;
+      meta?: {
+        agentRole?: string;
+        inputSummary?: string;
+        outputSummary?: string;
+        handoffTo?: string;
+        durationMs?: number;
+        candidateCount?: number;
+        parallelTasks?: number;
+        toolDomain?: string;
+        communication?: string[];
+      };
+    }[];
     generatedNotes?: { id: string; title: string }[];
   };
 };
@@ -380,6 +396,13 @@ export function IntelligenceFeed({
     }
     return jobs[0] ?? null;
   }, [activeAgentJobs, selectedAgentJobId]);
+  const liveAgentTrace = useMemo(() => {
+    const steps = liveAgentJob?.ui.steps ?? [];
+    return steps
+      .filter((s) => s.meta?.agentRole)
+      .slice(-6)
+      .reverse();
+  }, [liveAgentJob]);
   const [hitlUrl, setHitlUrl] = useState("");
   const [hitlBusy, setHitlBusy] = useState(false);
   const [hitlError, setHitlError] = useState<string | null>(null);
@@ -525,6 +548,36 @@ export function IntelligenceFeed({
             {liveAgentJob.ui.steps?.length ? (
               <div className="mt-3 rounded-xl border border-outline-variant/12 bg-surface-container-lowest/25 p-2">
                 <NextClawWorkflowGraph steps={liveAgentJob.ui.steps} />
+              </div>
+            ) : null}
+
+            {liveAgentTrace.length ? (
+              <div className="mt-3 rounded-xl border border-outline-variant/12 bg-white/60 p-3">
+                <div className="text-[11px] font-black text-on-surface">Agent Trace</div>
+                <div className="mt-2 space-y-2">
+                  {liveAgentTrace.map((step) => (
+                    <div key={`${step.id}-${step.meta?.agentRole}`} className="rounded-lg border border-black/8 bg-[#fafaf8] px-3 py-2">
+                      <div className="flex items-center justify-between gap-3 text-[11px]">
+                        <span className="font-black text-on-surface">
+                          {step.meta?.agentRole}
+                          {step.meta?.handoffTo ? ` -> ${step.meta.handoffTo}` : ""}
+                        </span>
+                        <span className="text-outline/75">
+                          {typeof step.meta?.durationMs === "number" ? `${step.meta.durationMs} ms` : null}
+                          {typeof step.meta?.parallelTasks === "number" && step.meta.parallelTasks > 1
+                            ? ` · parallel=${step.meta.parallelTasks}`
+                            : null}
+                        </span>
+                      </div>
+                      {step.meta?.inputSummary ? (
+                        <div className="mt-1 text-[10px] text-on-surface-variant">in: {step.meta.inputSummary}</div>
+                      ) : null}
+                      {step.meta?.outputSummary ? (
+                        <div className="mt-1 text-[10px] text-on-surface-variant">out: {step.meta.outputSummary}</div>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
               </div>
             ) : null}
 

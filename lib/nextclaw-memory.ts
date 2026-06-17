@@ -22,6 +22,16 @@ const EXTRACT_KEYS = [
 ] as const;
 
 type ExtractKey = (typeof EXTRACT_KEYS)[number];
+type MemorySource = "llm_extract" | "manual" | "system";
+
+type StoredMemoryValue = {
+  text: string;
+  confidence?: number;
+  source?: MemorySource;
+  sourceConversationId?: string;
+  expiresAt?: string;
+  updatedAt?: string;
+};
 
 function asRecord(v: unknown): Record<string, unknown> | null {
   return v && typeof v === "object" && !Array.isArray(v)
@@ -35,6 +45,29 @@ function textFromValue(value: unknown): string {
   const o = asRecord(value);
   if (o && typeof o.text === "string") return o.text.trim();
   return "";
+}
+
+function parseStoredMemoryValue(value: unknown): StoredMemoryValue | null {
+  const o = asRecord(value);
+  if (!o || typeof o.text !== "string" || !o.text.trim()) return null;
+  return {
+    text: o.text.trim(),
+    ...(typeof o.confidence === "number" && Number.isFinite(o.confidence)
+      ? { confidence: Math.max(0, Math.min(1, o.confidence)) }
+      : {}),
+    ...(typeof o.source === "string" ? { source: o.source as MemorySource } : {}),
+    ...(typeof o.sourceConversationId === "string" && o.sourceConversationId.trim()
+      ? { sourceConversationId: o.sourceConversationId.trim() }
+      : {}),
+    ...(typeof o.expiresAt === "string" && o.expiresAt.trim() ? { expiresAt: o.expiresAt.trim() } : {}),
+    ...(typeof o.updatedAt === "string" && o.updatedAt.trim() ? { updatedAt: o.updatedAt.trim() } : {}),
+  };
+}
+
+function isExpiredMemory(value: StoredMemoryValue, now = new Date()): boolean {
+  if (!value.expiresAt) return false;
+  const ms = Date.parse(value.expiresAt);
+  return Number.isFinite(ms) && ms <= now.getTime();
 }
 
 /** 拼入 system：UserMemory + 最近一条 LearningSnapshot，有总长度上限 */
@@ -54,10 +87,14 @@ export async function buildNextClawMemoryBlock(userId: string): Promise<string> 
   ]);
 
   const lines: string[] = [];
+  const now = new Date();
 
   for (const m of memories) {
-    const t = textFromValue(m.value);
+    const parsed = parseStoredMemoryValue(m.value);
+    const t = parsed?.text ?? textFromValue(m.value);
     if (!t) continue;
+    if (parsed && isExpiredMemory(parsed, now)) continue;
+    if (parsed && typeof parsed.confidence === "number" && parsed.confidence < 0.45) continue;
     const label =
       {
         current_topic: "当前主题",
@@ -82,7 +119,12 @@ export async function buildNextClawMemoryBlock(userId: string): Promise<string> 
 
 export async function upsertNextClawMemoryEntries(
   userId: string,
-  entries: Partial<Record<ExtractKey, string>>
+  entries: Partial<Record<ExtractKey, string>>,
+  options?: {
+    confidence?: number;
+    source?: MemorySource;
+    sourceConversationId?: string;
+  }
 ): Promise<void> {
   const importanceMap: Record<ExtractKey, number> = {
     current_topic: 3,
@@ -96,6 +138,18 @@ export async function upsertNextClawMemoryEntries(
     if (typeof raw !== "string") continue;
     const text = raw.trim();
     if (!text || text.length > 600) continue;
+    const expiresAt =
+      key === "next_action"
+        ? new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString()
+        : undefined;
+    const value: StoredMemoryValue = {
+      text,
+      ...(typeof options?.confidence === "number" ? { confidence: Math.max(0, Math.min(1, options.confidence)) } : {}),
+      ...(options?.source ? { source: options.source } : {}),
+      ...(options?.sourceConversationId ? { sourceConversationId: options.sourceConversationId } : {}),
+      ...(expiresAt ? { expiresAt } : {}),
+      updatedAt: new Date().toISOString(),
+    };
 
     await prisma.userMemory.upsert({
       where: {
@@ -109,12 +163,12 @@ export async function upsertNextClawMemoryEntries(
         userId,
         scope: NEXTCLAW_MEMORY_SCOPE,
         key,
-        value: { text },
+        value,
         importance: importanceMap[key],
         lastSeenAt: new Date(),
       },
       update: {
-        value: { text },
+        value,
         importance: importanceMap[key],
         lastSeenAt: new Date(),
       },
@@ -126,7 +180,10 @@ export async function upsertNextClawMemoryEntries(
 export async function extractNextClawMemoriesFromTurn(
   userId: string,
   userMessage: string,
-  assistantMessage: string
+  assistantMessage: string,
+  options?: {
+    conversationId?: string;
+  }
 ): Promise<void> {
   const u = userMessage.trim();
   const a = assistantMessage.trim();
@@ -182,5 +239,9 @@ ${a.slice(0, 8000)}`;
   }
 
   if (Object.keys(entries).length === 0) return;
-  await upsertNextClawMemoryEntries(userId, entries);
+  await upsertNextClawMemoryEntries(userId, entries, {
+    confidence: 0.7,
+    source: "llm_extract",
+    sourceConversationId: options?.conversationId,
+  });
 }
