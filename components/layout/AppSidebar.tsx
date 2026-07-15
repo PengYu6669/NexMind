@@ -65,7 +65,8 @@ export function AppSidebar() {
   };
 
   return (
-    <aside className="fixed left-0 top-0 z-40 flex h-screen w-64 flex-col border-r border-black/10 bg-white px-3 py-5 font-body text-black shadow-[18px_0_45px_rgba(0,0,0,0.04)]">
+    <>
+    <aside className="fixed left-0 top-0 z-40 hidden h-screen w-64 flex-col border-r border-black/10 bg-white px-3 py-5 font-body text-black shadow-[18px_0_45px_rgba(0,0,0,0.04)] md:flex">
       <div className="px-3 pb-5">
         <Link href="/dashboard" className="flex items-center gap-3">
           <span className="flex h-10 w-10 items-center justify-center rounded-full bg-black text-white">
@@ -138,5 +139,17 @@ export function AppSidebar() {
         </div>
       </div>
     </aside>
+    <nav className="fixed inset-x-0 bottom-0 z-50 flex h-16 items-center justify-around border-t border-black/10 bg-white/95 px-2 pb-[env(safe-area-inset-bottom)] shadow-[0_-8px_24px_rgba(0,0,0,0.08)] backdrop-blur-xl md:hidden" aria-label="移动端导航">
+      {navItems.slice(0, 5).map((item) => {
+        const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
+        return (
+          <Link key={item.href} href={item.href} className={`flex min-w-0 flex-1 flex-col items-center gap-0.5 py-2 text-[10px] font-bold ${active ? "text-black" : "text-neutral-500"}`}>
+            <MaterialIcon name={item.icon} className="text-xl" filled={active} />
+            <span className="truncate">{item.label}</span>
+          </Link>
+        );
+      })}
+    </nav>
+    </>
   );
 }

@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
-import ReactFlow, { Background, Handle, Position, type Node, type Edge } from "reactflow";
+import ReactFlow, { Background, Handle, Position, type Node, type Edge, type NodeProps, type NodeTypes } from "reactflow";
 import "reactflow/dist/style.css";
 
 type StepLike = {
@@ -36,11 +36,9 @@ function pickSummary(steps: StepLike[], stepId: string): string | null {
   return (s?.toolSummary ?? "").trim() || null;
 }
 
-function NodeCard({
-  data,
-}: {
-  data: { title: string; status: NodeStatus; summary?: string | null };
-}) {
+type WorkflowNodeData = { title: string; status: NodeStatus; summary?: string | null };
+
+function NodeCard({ data }: NodeProps<WorkflowNodeData>) {
   const tone =
     data.status === "running"
       ? "border-primary/35 bg-primary/10"
@@ -78,6 +76,7 @@ function NodeCard({
 }
 
 export function NextClawWorkflowGraph({ steps }: { steps: StepLike[] }) {
+  const nodeTypes = useMemo<NodeTypes>(() => ({ card: NodeCard }), []);
   const { nodes, edges } = useMemo(() => {
     const s = Array.isArray(steps) ? steps : [];
 
@@ -132,7 +131,7 @@ export function NextClawWorkflowGraph({ steps }: { steps: StepLike[] }) {
       <ReactFlow
         nodes={nodes}
         edges={edges}
-        nodeTypes={{ card: NodeCard as any }}
+        nodeTypes={nodeTypes}
         fitView
         // 初始稍微放大一点：减少 padding，让默认视图更“近”
         fitViewOptions={{ padding: 0.12 }}

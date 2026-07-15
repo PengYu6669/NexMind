@@ -22,6 +22,7 @@ async function buildActiveJobsPayload(userId: string) {
       OR: [
         { status: { in: ["PENDING", "RUNNING"] } },
         // HITL：等待用户输入来源 URL 的任务也要保持可见，否则中间工作流与右侧图谱会“消失”
+        { status: "WAITING_INPUT" },
         { status: "CANCELLED", lastError: { contains: "HITL" } },
       ],
     },
@@ -86,6 +87,7 @@ async function buildActiveJobsPayload(userId: string) {
       userId,
       OR: [
         { status: { in: ["PENDING", "RUNNING"] } },
+        { status: "WAITING_INPUT" },
         { status: "CANCELLED", lastError: { contains: "HITL" } },
       ],
     },

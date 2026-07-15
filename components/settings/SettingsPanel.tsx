@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 type SettingsPayload = {
   profile: { name: string; email: string; plan: string };
   userSettings: { theme: "dark" | "light" | string; nextclawMemoryEnabled: boolean };
-  envSettings: { NEXT_PUBLIC_AI_DEFAULT_MODEL: string; hasSerpApiKey: boolean; maskedSerpApiKey: string };
+  systemCapabilities: { defaultModel: string; webSearchConfigured: boolean };
 };
 
 export function SettingsPanel() {
@@ -20,8 +20,7 @@ export function SettingsPanel() {
   const [theme, setTheme] = useState<"dark" | "light">("dark");
   const [memoryEnabled, setMemoryEnabled] = useState(true);
   const [defaultModel, setDefaultModel] = useState("");
-  const [serpapiKey, setSerpapiKey] = useState("");
-  const [serpapiMasked, setSerpapiMasked] = useState("");
+  const [webSearchConfigured, setWebSearchConfigured] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -34,8 +33,8 @@ export function SettingsPanel() {
         setPlan(data.profile.plan || "free");
         setTheme(data.userSettings.theme === "light" ? "light" : "dark");
         setMemoryEnabled(Boolean(data.userSettings.nextclawMemoryEnabled));
-        setDefaultModel(data.envSettings.NEXT_PUBLIC_AI_DEFAULT_MODEL || "");
-        setSerpapiMasked(data.envSettings.maskedSerpApiKey || "");
+        setDefaultModel(data.systemCapabilities.defaultModel || "");
+        setWebSearchConfigured(data.systemCapabilities.webSearchConfigured);
       } catch (e) {
         setErr(e instanceof Error ? e.message : "加载失败");
       } finally {
@@ -60,16 +59,11 @@ export function SettingsPanel() {
         body: JSON.stringify({
           profile: { name },
           userSettings: { theme, nextclawMemoryEnabled: memoryEnabled },
-          envSettings: { NEXT_PUBLIC_AI_DEFAULT_MODEL: defaultModel, SERPAPI_API_KEY: serpapiKey },
         }),
       });
       const data = (await r.json().catch(() => null)) as { error?: string; message?: string } | null;
       if (!r.ok) throw new Error(data?.error || "保存失败");
       setMsg(data?.message || "设置已保存");
-      if (serpapiKey.trim()) {
-        setSerpapiMasked("已更新");
-        setSerpapiKey("");
-      }
     } catch (e) {
       setErr(e instanceof Error ? e.message : "保存失败");
     } finally {
@@ -81,7 +75,7 @@ export function SettingsPanel() {
     <section className="mx-auto max-w-3xl p-6">
       <div className="rounded-2xl border border-outline-variant/15 bg-surface-container-lowest/30 p-4">
         <h1 className="text-base font-black text-on-surface">设置</h1>
-        <p className="mt-1 text-xs text-on-surface-variant">个人信息、模型与搜索密钥配置。</p>
+        <p className="mt-1 text-xs text-on-surface-variant">个人信息、偏好与系统能力状态。</p>
 
         <div className="mt-4 grid gap-3 md:grid-cols-2">
           <label className="text-xs text-on-surface-variant">
@@ -104,8 +98,8 @@ export function SettingsPanel() {
             默认模型（NEXT_PUBLIC_AI_DEFAULT_MODEL）
             <input
               value={defaultModel}
-              onChange={(e) => setDefaultModel(e.target.value)}
-              className="mt-1 w-full rounded-lg border border-outline-variant/20 bg-surface-container-low px-3 py-2 text-sm text-on-surface outline-none"
+              disabled
+              className="mt-1 w-full rounded-lg border border-outline-variant/15 bg-surface-container-low/50 px-3 py-2 text-sm text-on-surface-variant"
             />
           </label>
           <label className="text-xs text-on-surface-variant">
@@ -119,15 +113,9 @@ export function SettingsPanel() {
               <option value="light">浅色</option>
             </select>
           </label>
-          <label className="text-xs text-on-surface-variant md:col-span-2">
-            搜索 API Key（SERPAPI_API_KEY）
-            <input
-              value={serpapiKey}
-              onChange={(e) => setSerpapiKey(e.target.value)}
-              placeholder={serpapiMasked ? `当前：${serpapiMasked}（留空则不改）` : "输入 SerpAPI Key"}
-              className="mt-1 w-full rounded-lg border border-outline-variant/20 bg-surface-container-low px-3 py-2 text-sm text-on-surface outline-none"
-            />
-          </label>
+          <div className="text-xs text-on-surface-variant md:col-span-2">
+            联网搜索：{webSearchConfigured ? "已由系统管理员配置" : "未配置"}
+          </div>
           <label className="md:col-span-2 flex items-center gap-2 text-xs text-on-surface-variant">
             <input type="checkbox" checked={memoryEnabled} onChange={(e) => setMemoryEnabled(e.target.checked)} />
             NextClaw 记忆留存

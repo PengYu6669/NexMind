@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getAuthUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { firstValidationMessage, folderInputSchema } from "@/lib/api-inputs";
 
 export async function PATCH(
   req: Request,
@@ -10,11 +11,9 @@ export async function PATCH(
   if (!user) return NextResponse.json({ error: "未登录" }, { status: 401 });
 
   const { id } = await context.params;
-  const body = (await req.json().catch(() => null)) as { name?: string } | null;
-  const raw = typeof body?.name === "string" ? body.name.trim() : "";
-  if (!raw || raw.length > 80) {
-    return NextResponse.json({ error: "名称长度需在 1–80 字" }, { status: 400 });
-  }
+  const parsed = folderInputSchema.safeParse(await req.json().catch(() => ({})));
+  if (!parsed.success) return NextResponse.json({ error: firstValidationMessage(parsed.error) }, { status: 400 });
+  const raw = parsed.data.name;
 
   const updated = await prisma.noteFolder.updateMany({
     where: { id, userId: user.id },
@@ -46,7 +45,7 @@ export async function DELETE(
     return NextResponse.json({ error: "文件夹不存在" }, { status: 404 });
   }
 
-  const r = await prisma.$transaction(async (tx: any) => {
+  const r = await prisma.$transaction(async (tx) => {
     const notesDeleted = await tx.note.deleteMany({
       where: { userId: user.id, folderId: id },
     });

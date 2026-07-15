@@ -37,7 +37,7 @@ type TaskRow = {
   id: string;
   noteId: string | null;
   noteTitle: string;
-  status: "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELLED" | "SKIPPED";
+  status: "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELLED" | "WAITING_INPUT" | "SKIPPED";
   type: string;
 };
 

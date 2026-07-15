@@ -250,10 +250,10 @@ export function LearnPageClient() {
   return (
     <div className="h-[100dvh] min-h-0 overflow-hidden bg-[#fbfbfa] font-body text-black">
       <AppSidebar />
-      <div className="flex h-full min-h-0 flex-col pl-64">
+      <div className="flex h-full min-h-0 flex-col md:pl-64">
         <AppTopBar />
-        <div className="grid min-h-0 flex-1 grid-cols-[340px_minmax(0,1fr)_340px] gap-0 overflow-hidden pb-6 pt-16">
-          <aside className="min-h-0 overflow-y-auto border-r border-black/10 bg-white px-4 py-4">
+        <div className="grid min-h-0 flex-1 grid-cols-1 gap-0 overflow-y-auto pb-16 pt-16 lg:grid-cols-[280px_minmax(0,1fr)_300px] lg:overflow-hidden lg:pb-6">
+          <aside className="order-2 min-h-0 overflow-y-auto border-t border-black/10 bg-white px-4 py-4 lg:order-1 lg:border-r lg:border-t-0">
             <LearnPlanRail
               loading={loading}
               error={error}
@@ -264,7 +264,7 @@ export function LearnPageClient() {
             />
           </aside>
 
-          <main className="min-h-0 overflow-y-auto px-6 py-5">
+          <main className="order-1 min-h-0 overflow-y-auto px-4 py-4 sm:px-6 sm:py-5 lg:order-2">
             {loading ? (
               <LoadingState />
             ) : error ? (
@@ -297,7 +297,7 @@ export function LearnPageClient() {
             )}
           </main>
 
-          <aside className="min-h-0 overflow-y-auto border-l border-black/10 bg-white px-4 py-4">
+          <aside className="order-3 min-h-0 overflow-y-auto border-t border-black/10 bg-white px-4 py-4 lg:border-l lg:border-t-0">
             <LearningSidePanel data={data} selected={selected} onSelect={setSelected} />
           </aside>
         </div>
@@ -426,7 +426,7 @@ function ReviewSession({
   return (
     <div className="mx-auto max-w-4xl space-y-4">
       <section className="rounded-xl border border-black/10 bg-white p-5 shadow-sm">
-        <div className="flex items-start justify-between gap-4">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <span className="rounded-md border border-black/10 bg-[#f4ecd6] px-2 py-1 text-[11px] font-bold text-neutral-900">
@@ -453,7 +453,7 @@ function ReviewSession({
         </div>
       </section>
 
-      <section className="grid grid-cols-[minmax(0,1fr)_280px] gap-4">
+      <section className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_280px]">
         <div className="space-y-4">
           <div className="rounded-xl border border-black/10 bg-white p-5">
             <div className="mb-2 flex items-center gap-2 text-xs font-black text-neutral-500">

@@ -39,7 +39,7 @@ type TaskItem = {
   noteId: string | null;
   noteTitle: string;
   type: "NOTE_LEARN_LITE" | "NOTE_LEARN_DEEP" | "NOTE_EXTERNAL_INJECT";
-  status: "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELLED" | "SKIPPED";
+  status: "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELLED" | "WAITING_INPUT" | "SKIPPED";
   attempts: number;
   lastError?: string | null;
   runAt: string;
@@ -593,7 +593,7 @@ export function NextClawTaskDesk({
                             中断
                           </button>
                         ) : null}
-                        {t.status === "FAILED" || t.status === "CANCELLED" ? (
+                        {t.status === "FAILED" || t.status === "CANCELLED" || t.status === "WAITING_INPUT" ? (
                           <button
                             type="button"
                             disabled={busy}

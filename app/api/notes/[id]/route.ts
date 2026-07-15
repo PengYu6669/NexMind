@@ -1,9 +1,10 @@
-import { NextResponse } from "next/server";
+import { after, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAuthUser } from "@/lib/auth";
 import { scheduleLearningJobsProcessing } from "@/lib/learning-jobs-kickoff";
 import { indexNoteForRag } from "@/lib/rag";
 import { syncOutgoingNoteLinksFromContent } from "@/lib/note-links-sync";
+import { firstValidationMessage, updateNoteInputSchema } from "@/lib/api-inputs";
 
 export async function PATCH(
   req: Request,
@@ -14,12 +15,9 @@ export async function PATCH(
 
   const { id } = await context.params;
 
-  const body = (await req.json()) as {
-    title?: string;
-    content?: string;
-    folderId?: string | null;
-    triggerLearning?: boolean;
-  };
+  const parsed = updateNoteInputSchema.safeParse(await req.json().catch(() => ({})));
+  if (!parsed.success) return NextResponse.json({ error: firstValidationMessage(parsed.error) }, { status: 400 });
+  const body = parsed.data;
   const content = body.content;
   const triggerLearning = body.triggerLearning === true;
   const hasTitle = typeof body.title === "string";
@@ -34,7 +32,7 @@ export async function PATCH(
   if (hasFolder) {
     if (body.folderId === null) {
       folderIdUpdate = null;
-    } else if (typeof body.folderId === "string") {
+    } else {
       const fo = await prisma.noteFolder.findFirst({
         where: { id: body.folderId, userId: user.id },
         select: { id: true },
@@ -43,8 +41,6 @@ export async function PATCH(
         return NextResponse.json({ error: "文件夹不存在" }, { status: 400 });
       }
       folderIdUpdate = body.folderId;
-    } else {
-      return NextResponse.json({ error: "folderId 无效" }, { status: 400 });
     }
   }
 
@@ -75,7 +71,8 @@ export async function PATCH(
 
   // 仅标题/正文变更时重建向量；仅移动文件夹不触发索引
   if (hasTitle || hasContent) {
-    try {
+    after(async () => {
+      try {
       const latest = await prisma.note.findFirst({
         where: { id, userId: user.id },
         select: { id: true, title: true, content: true },
@@ -88,9 +85,10 @@ export async function PATCH(
           content: latest.content,
         });
       }
-    } catch {
-      // ignore
-    }
+      } catch (error) {
+        console.error("[notes/index-after-save]", error);
+      }
+    });
   }
 
   // 学习任务改为“显式触发”：

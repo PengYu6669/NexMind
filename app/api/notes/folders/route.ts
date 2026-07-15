@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getAuthUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { firstValidationMessage, folderInputSchema } from "@/lib/api-inputs";
 
 /** 列出当前用户的文件夹（按 sortOrder、名称） */
 export async function GET() {
@@ -21,11 +22,9 @@ export async function POST(req: Request) {
   const user = await getAuthUser();
   if (!user) return NextResponse.json({ error: "未登录" }, { status: 401 });
 
-  const body = (await req.json().catch(() => null)) as { name?: string } | null;
-  const raw = typeof body?.name === "string" ? body.name.trim() : "";
-  if (!raw || raw.length > 80) {
-    return NextResponse.json({ error: "名称长度需在 1–80 字" }, { status: 400 });
-  }
+  const parsed = folderInputSchema.safeParse(await req.json().catch(() => ({})));
+  if (!parsed.success) return NextResponse.json({ error: firstValidationMessage(parsed.error) }, { status: 400 });
+  const raw = parsed.data.name;
 
   const agg = await prisma.noteFolder.aggregate({
     where: { userId: user.id },

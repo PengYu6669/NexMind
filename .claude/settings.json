@@ -18,7 +18,9 @@
       "Bash(npx tsx *)",
       "Bash(npx eslint *)",
       "Bash(node -e \"const {segmentForFts} = require\\('./lib/chinese-segmenter.ts'?.replace\\); \")",
-      "Bash(git add *)"
+      "Bash(git add *)",
+      "Bash(git commit -m 'feat: P0-P2 RAG/chunking/agent 全链路优化 *)",
+      "Bash(git push *)"
     ]
   }
 }

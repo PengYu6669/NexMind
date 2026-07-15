@@ -2,20 +2,20 @@ import { NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
 import { readAuthRequestBody } from "@/lib/auth-request-body";
+import { firstValidationMessage, registerInputSchema } from "@/lib/api-inputs";
+import { clientAddress, consumeRateLimit } from "@/lib/rate-limit";
 
 export async function POST(req: Request) {
+  const rate = consumeRateLimit(`auth:register:${clientAddress(req)}`, { limit: 20, windowMs: 15 * 60_000 });
+  if (!rate.allowed) {
+    return NextResponse.json({ error: "请求过于频繁，请稍后再试", code: "RATE_LIMITED" }, {
+      status: 429, headers: { "Retry-After": String(rate.retryAfterSeconds) },
+    });
+  }
   const body = await readAuthRequestBody(req);
-
-  const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
-  const password = typeof body.password === "string" ? body.password : "";
-  const name = typeof body.name === "string" ? body.name.trim() : "";
-
-  if (!email || !password) {
-    return NextResponse.json({ error: "缺少 email 或 password" }, { status: 400 });
-  }
-  if (password.length < 6) {
-    return NextResponse.json({ error: "密码长度至少 6 位" }, { status: 400 });
-  }
+  const parsed = registerInputSchema.safeParse(body);
+  if (!parsed.success) return NextResponse.json({ error: firstValidationMessage(parsed.error) }, { status: 400 });
+  const { email, password, name = "" } = parsed.data;
 
   const existed = await prisma.user.findUnique({ where: { email } });
   if (existed) {

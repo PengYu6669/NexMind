@@ -4,16 +4,20 @@ import jwt from "jsonwebtoken";
 import { getJwtSecret } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { readAuthRequestBody } from "@/lib/auth-request-body";
+import { firstValidationMessage, loginInputSchema } from "@/lib/api-inputs";
+import { clientAddress, consumeRateLimit } from "@/lib/rate-limit";
 
 export async function POST(req: Request) {
-  const body = await readAuthRequestBody(req);
-
-  const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
-  const password = typeof body.password === "string" ? body.password : "";
-
-  if (!email || !password) {
-    return NextResponse.json({ error: "缺少 email 或 password" }, { status: 400 });
+  const rate = consumeRateLimit(`auth:login:${clientAddress(req)}`, { limit: 30, windowMs: 15 * 60_000 });
+  if (!rate.allowed) {
+    return NextResponse.json({ error: "登录尝试过多，请稍后再试", code: "RATE_LIMITED" }, {
+      status: 429, headers: { "Retry-After": String(rate.retryAfterSeconds) },
+    });
   }
+  const body = await readAuthRequestBody(req);
+  const parsed = loginInputSchema.safeParse(body);
+  if (!parsed.success) return NextResponse.json({ error: firstValidationMessage(parsed.error) }, { status: 400 });
+  const { email, password, remember: rememberValue } = parsed.data;
 
   const user = await prisma.user.findUnique({
     where: { email },
@@ -31,8 +35,7 @@ export async function POST(req: Request) {
 
   const token = jwt.sign({ sub: user.id, email: user.email }, getJwtSecret(), { expiresIn: "7d" });
 
-  const remember =
-    body.remember === true || body.remember === "true" || body.remember === "on" || body.remember === "1";
+  const remember = rememberValue === true || rememberValue === "true" || rememberValue === "on" || rememberValue === "1";
   const maxAge = remember ? 60 * 60 * 24 * 30 : 60 * 60 * 24 * 7;
 
   const res = NextResponse.json({ ok: true });

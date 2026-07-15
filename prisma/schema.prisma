@@ -26,6 +26,7 @@ enum LearningJobStatus {
   SUCCEEDED
   FAILED
   CANCELLED
+  WAITING_INPUT
   SKIPPED
 }
 

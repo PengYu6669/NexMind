@@ -23,7 +23,7 @@ const featureCards = [
   },
 ];
 
-const workflowSteps = ["捕获资料", "沉淀笔记", "构建关联", "复习迁移"];
+const workflowSteps = ["捕获资料", "关联已有知识", "生成学习卡片", "复习与迁移"];
 
 export function LandingPage() {
   return (
@@ -46,7 +46,7 @@ export function LandingPage() {
                 把笔记、搜索、AI 学习和知识图谱放进一个清爽的个人第二大脑。
               </p>
               <p className="mt-6 max-w-xl text-base leading-8 text-neutral-600 sm:text-lg">
-                从捕获灵感到复习迁移，NexMind 帮你把零散内容整理成可检索、可追踪、可复用的知识系统。
+                从捕获资料到复习迁移，NexMind 帮你把零散内容整理成可检索、可追踪、可复用的持续学习系统。
               </p>
 
               <div className="mt-9 flex flex-col gap-3 sm:flex-row">
@@ -154,9 +154,9 @@ export function LandingPage() {
         <section className="px-5 py-20 sm:px-8 lg:px-10">
           <div className="mx-auto grid max-w-7xl gap-10 lg:grid-cols-[0.9fr_1.1fr]">
             <div>
-              <p className="font-mono text-sm uppercase tracking-[0.18em] text-neutral-500">Workflow</p>
+              <p className="font-mono text-sm uppercase tracking-[0.18em] text-neutral-500">Learning System</p>
               <h2 className="mt-4 max-w-2xl text-4xl font-[420] leading-tight sm:text-6xl">
-                从输入到掌握，每一步都能追踪。
+                从一条笔记到真正掌握，每一步都能追踪。
               </h2>
             </div>
             <div className="grid gap-3">
@@ -169,9 +169,9 @@ export function LandingPage() {
                     <h3 className="text-xl font-black">{step}</h3>
                     <p className="mt-1 leading-7 text-neutral-600">
                       {index === 0 && "快速保存网页、文件、想法与对话，不让信息散落在不同工具里。"}
-                      {index === 1 && "让 AI 帮你整理摘要、关键概念和可行动的下一步。"}
-                      {index === 2 && "通过语义关系把旧知识和新材料连起来，形成自己的上下文。"}
-                      {index === 3 && "生成学习卡片与复习队列，让知识真正回到日常使用中。"}
+                      {index === 1 && "通过语义检索找回相关笔记，把新材料放进已有上下文。"}
+                      {index === 2 && "让 NextClaw 分析重点、规划任务，并生成可复习的学习卡片。"}
+                      {index === 3 && "进入复习队列，通过 AI 评分和间隔重复，让知识回到日常使用中。"}
                     </p>
                   </div>
                 </div>
@@ -186,7 +186,7 @@ export function LandingPage() {
               <div>
                 <p className="font-mono text-sm uppercase tracking-[0.18em] text-white/60">NexMind</p>
                 <h2 className="mt-4 max-w-3xl text-4xl font-[420] leading-tight sm:text-6xl">
-                  让你的知识库变成每天可用的工作流。
+                  让你的知识库变成持续运转的学习系统。
                 </h2>
               </div>
               <Link

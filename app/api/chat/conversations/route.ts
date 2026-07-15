@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAuthUser } from "@/lib/auth";
+import { createConversationInputSchema, firstValidationMessage } from "@/lib/api-inputs";
 
 /** 工作台：历史会话列表（卡片用） */
 export async function GET() {
@@ -45,8 +46,9 @@ export async function POST(req: Request) {
   const user = await getAuthUser();
   if (!user) return NextResponse.json({ error: "未登录" }, { status: 401 });
 
-  const body = (await req.json().catch(() => ({}))) as { title?: string };
-  const title = body.title?.trim() || "新对话";
+  const parsed = createConversationInputSchema.safeParse(await req.json().catch(() => ({})));
+  if (!parsed.success) return NextResponse.json({ error: firstValidationMessage(parsed.error) }, { status: 400 });
+  const title = parsed.data.title || "新对话";
 
   const c = await prisma.conversation.create({
     data: { userId: user.id, title },

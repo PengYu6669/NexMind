@@ -14,6 +14,7 @@ import {
 import { nextClawAntiFillInBlankExtraPrompt } from "@/lib/nextclaw-intent";
 import { ensureKnowledgeSourceIndexed } from "@/lib/knowledge-source-process";
 import { buildConversationWindow } from "@/lib/nextclaw-conversation-window";
+import { chatMessageInputSchema, firstValidationMessage } from "@/lib/api-inputs";
 
 function mapToAiRole(role: "USER" | "ASSISTANT" | "SYSTEM"): "user" | "assistant" | "system" {
   if (role === "USER") return "user";
@@ -27,22 +28,10 @@ export async function POST(req: Request) {
   const user = await getAuthUser();
   if (!user) return NextResponse.json({ error: "未登录" }, { status: 401 });
 
-  const body = (await req.json()) as {
-    content?: string;
-    conversationId?: string;
-    noteId?: string;
-    /** 智能流卡片追问：注入卡片上下文并默认聚焦其所属笔记 */
-    learningCardId?: string;
-    /** @deprecated 使用 nextclaw */
-    companion?: boolean;
-    nextclaw?: boolean;
-    /** NextClaw 预设自动执行：由后端在回答结束后自动生成“学习笔记版”并落库 */
-    autonomousStudy?: boolean;
-    /** 本会话已上传并入库的聊天附件（KnowledgeSource.id） */
-    attachmentSourceIds?: string[];
-  };
-  const content = body.content?.trim();
-  if (!content) return NextResponse.json({ error: "缺少 content" }, { status: 400 });
+  const parsed = chatMessageInputSchema.safeParse(await req.json().catch(() => ({})));
+  if (!parsed.success) return NextResponse.json({ error: firstValidationMessage(parsed.error) }, { status: 400 });
+  const body = parsed.data;
+  const { content } = body;
   const nextClawMode = Boolean(body.nextclaw ?? body.companion);
   const autonomousStudy = Boolean(body.autonomousStudy);
 

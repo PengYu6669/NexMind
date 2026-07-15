@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { getAuthUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { assertSafePublicHttpUrl } from "@/lib/safe-public-url";
+import { firstValidationMessage, nextClawTaskActionInputSchema } from "@/lib/api-inputs";
 
 export async function POST(
   req: Request,
@@ -13,9 +15,9 @@ export async function POST(
   const jobId = p.jobId?.trim();
   if (!jobId) return NextResponse.json({ error: "缺少 jobId" }, { status: 400 });
 
-  const body = (await req.json().catch(() => ({}))) as { action?: string; url?: string };
-  const action = (body.action ?? "").trim().toLowerCase();
-  if (!action) return NextResponse.json({ error: "缺少 action" }, { status: 400 });
+  const parsed = nextClawTaskActionInputSchema.safeParse(await req.json().catch(() => ({})));
+  if (!parsed.success) return NextResponse.json({ error: firstValidationMessage(parsed.error) }, { status: 400 });
+  const { action } = parsed.data;
 
   const job = await prisma.learningJob.findFirst({
     where: { id: jobId, userId: user.id },
@@ -50,14 +52,18 @@ export async function POST(
   }
 
   if (action === "override_source") {
-    const url = (body.url ?? "").trim();
+    const url = (parsed.data.url ?? "").trim();
     if (!url) return NextResponse.json({ error: "缺少 url" }, { status: 400 });
-    if (!/^https?:\/\//i.test(url)) return NextResponse.json({ error: "仅支持 http/https URL" }, { status: 400 });
+    try {
+      await assertSafePublicHttpUrl(url);
+    } catch (error) {
+      return NextResponse.json({ error: error instanceof Error ? error.message : "URL 不安全" }, { status: 400 });
+    }
     // 最小 HITL：建议先中断再覆盖来源，避免与 RUNNING 写入产生竞态。
     if (job.status === "RUNNING" || job.status === "PENDING") {
       return NextResponse.json({ error: "请先中断任务，再选择来源继续执行" }, { status: 409 });
     }
-    if (!["FAILED", "CANCELLED", "SKIPPED"].includes(job.status)) {
+    if (!["FAILED", "CANCELLED", "WAITING_INPUT", "SKIPPED"].includes(job.status)) {
       return NextResponse.json({ error: "当前状态不可选择来源" }, { status: 409 });
     }
     const planBase = job.plan && typeof job.plan === "object" && !Array.isArray(job.plan) ? (job.plan as Record<string, unknown>) : {};
@@ -67,12 +73,14 @@ export async function POST(
         ...(planBase.__hitl && typeof planBase.__hitl === "object" ? (planBase.__hitl as Record<string, unknown>) : {}),
         overrideUrl: url,
         at: new Date().toISOString(),
+        forceFreshReplay: true,
       },
     };
     await prisma.learningJob.update({
       where: { id: job.id },
       data: {
         plan: nextPlan,
+        steps: [],
         status: "PENDING",
         runAt: new Date(),
         finishedAt: null,
@@ -84,7 +92,7 @@ export async function POST(
 
   if (action === "resume" || action === "retry_from_step") {
     if (!job.noteId) return NextResponse.json({ error: "缺少 noteId，无法继续" }, { status: 409 });
-    if (!["FAILED", "CANCELLED", "SKIPPED"].includes(job.status)) {
+    if (!["FAILED", "CANCELLED", "WAITING_INPUT", "SKIPPED"].includes(job.status)) {
       return NextResponse.json({ error: "当前状态不可继续执行" }, { status: 409 });
     }
     // 根治：不再创建新 job/删除旧 job，直接让同一个 jobId 重新进入队列。

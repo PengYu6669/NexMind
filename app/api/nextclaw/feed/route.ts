@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { learningCardToFeedDto } from "@/lib/nextclaw-feed";
 import { buildTaskUiPayload } from "@/lib/nextclaw-task-ui";
 import { scheduleLearningJobsProcessing } from "@/lib/learning-jobs-kickoff";
+import { deleteCardsInputSchema, firstValidationMessage } from "@/lib/api-inputs";
 
 type FeedStepLike = { toolSummary?: string | null };
 type FeedJobUi = ReturnType<typeof buildTaskUiPayload> & {
@@ -34,6 +35,7 @@ export async function GET(req: Request) {
         OR: [
           { status: { in: ["PENDING", "RUNNING"] } },
           // HITL：等待用户输入来源 URL 的任务也要保持可见，否则中间工作流与右侧列表会“消失”
+          { status: "WAITING_INPUT" },
           { status: "CANCELLED", lastError: { contains: "HITL" } },
         ],
       },
@@ -113,6 +115,7 @@ export async function GET(req: Request) {
         userId: user.id,
         OR: [
           { status: { in: ["PENDING", "RUNNING"] } },
+          { status: "WAITING_INPUT" },
           { status: "CANCELLED", lastError: { contains: "HITL" } },
         ],
       },
@@ -170,13 +173,10 @@ export async function DELETE(req: Request) {
   const user = await getAuthUser();
   if (!user) return NextResponse.json({ error: "未登录" }, { status: 401 });
 
-  const body = (await req.json().catch(() => null)) as { cardId?: string; all?: boolean } | null;
-  const cardId = typeof body?.cardId === "string" ? body.cardId.trim() : "";
-  const all = body?.all === true;
-
-  if (!all && !cardId) {
-    return NextResponse.json({ error: "缺少 cardId 或 all=true" }, { status: 400 });
-  }
+  const parsed = deleteCardsInputSchema.safeParse(await req.json().catch(() => ({})));
+  if (!parsed.success) return NextResponse.json({ error: firstValidationMessage(parsed.error) }, { status: 400 });
+  const cardId = parsed.data.cardId ?? "";
+  const all = parsed.data.all === true;
 
   if (all) {
     const r = await prisma.learningCard.deleteMany({ where: { userId: user.id } });

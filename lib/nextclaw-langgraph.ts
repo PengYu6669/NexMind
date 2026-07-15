@@ -38,9 +38,19 @@ import {
   RAG_TOPK_LITE,
   SUPERVISOR_LLM_ROUTING,
 } from "@/lib/nextclaw-agent-config";
-import type { PlanToolName } from "@/lib/nextclaw-agent-types";
+import type { LearningPlanStepDraft, PlanToolName } from "@/lib/nextclaw-agent-types";
 import { runNextClawSkill } from "@/lib/nextclaw-skills";
 import { emitLearningJobEvent } from "@/lib/learning-job-events";
+import {
+  routeAfterExecutor,
+  routeAfterFetch,
+  routeAfterFilter,
+  routeAfterPlanner,
+  routeAfterReason,
+  routeAfterSupervisor,
+  routeAfterWebSearch,
+} from "@/lib/nextclaw-routing";
+import { normalizePlanSteps } from "@/lib/nextclaw-plan";
 
 type JobType = "NOTE_LEARN_LITE" | "NOTE_LEARN_DEEP";
 
@@ -48,7 +58,7 @@ type RelatedNote = { noteId: string; title: string; snippet: string; distance?: 
 type RoleStats = Record<AgentRole, number>;
 type CandidateSource = { url: string; title?: string; description?: string; trustScore: number; trustLevel: string };
 type FetchedCandidate = CandidateSource & { markdown: string; summary: string; chars: number };
-type HitlPlanMeta = { __hitl?: { overrideUrl?: string } };
+type HitlPlanMeta = { __hitl?: { overrideUrl?: string; forceFreshReplay?: boolean } };
 type WebSearchToolData = {
   query?: string;
   results?: Array<{ title?: string; url?: string; description?: string }>;
@@ -106,7 +116,7 @@ export type NextClawLangGraphState = {
   kbDigest: string | undefined;
 
   // ── 计划态（planner_node / plan_executor 生产）──
-  plan: { steps: Array<{ id: string; title: string; tool: string | null }> } | undefined;
+  plan: { steps: LearningPlanStepDraft[] } | undefined;
   toolTraceLines: string[] | undefined;
 
   // ── 运行时态（各节点追加）──
@@ -341,6 +351,15 @@ function withAgentTrace(params: {
 }
 
 function buildNextClawGraph() {
+  const stepSchema = z.object({
+    id: z.string(), phase: z.enum(["idle", "think", "tool", "done"]), label: z.string(),
+    status: z.enum(["pending", "running", "done", "failed"]), toolName: z.string().optional(),
+    toolSummary: z.string().optional(), meta: z.record(z.string(), z.unknown()).optional(), at: z.string(),
+  });
+  const candidateSchema = z.object({
+    url: z.string(), title: z.string().optional(), description: z.string().optional(),
+    trustScore: z.number(), trustLevel: z.string(),
+  });
   const State = new StateSchema({
     jobId: z.string(),
     userId: z.string(),
@@ -352,28 +371,52 @@ function buildNextClawGraph() {
     noteText: z.string().optional(),
     noteSourceType: z.string().optional(),
 
-    relatedNotes: z.any().optional(),
-    relatedLines: z.any().optional(),
+    relatedNotes: z.array(z.object({ noteId: z.string(), title: z.string(), snippet: z.string(), distance: z.number().optional() })).optional(),
+    relatedLines: z.array(z.string()).optional(),
     kbDigest: z.string().optional(),
 
-    plan: z.any().optional(),
-    toolTraceLines: z.any().optional(),
-    roleStats: z.any().optional(),
-    metrics: z.any().optional(),
-    steps: z.any().optional(),
+    plan: z.object({ steps: z.array(z.object({
+      id: z.string(), title: z.string(),
+      tool: z.enum(["search_notes", "read_note", "web_search", "fetch_url", "audit_content", "synthesize", "noop"]).nullable(),
+      toolInput: z.record(z.string(), z.unknown()).optional(),
+    })) }).optional(),
+    toolTraceLines: z.array(z.string()).optional(),
+    roleStats: z.object({
+      supervisor: z.number(), planner: z.number(), retriever: z.number(), source_analyst: z.number(),
+      auditor: z.number(), coach: z.number(), scheduler: z.number(),
+    }).optional(),
+    metrics: z.object({
+      startedAtMs: z.number(), toolCalls: z.number(), retries: z.number(),
+      degraded: z.boolean(), needHumanIntervention: z.boolean(),
+    }).optional(),
+    steps: z.array(stepSchema).optional(),
 
-    coachResult: z.any().optional(),
+    coachResult: z.unknown().optional(),
 
-    supervisorDecision: z.any().optional(),
-    autoDecision: z.any().optional(),
-    autoWebSearchResults: z.any().optional(),
-    autoCandidates: z.any().optional(),
-    autoPick: z.any().optional(),
-    autoFetchedCandidates: z.any().optional(),
-    autoFetched: z.any().optional(),
-    autoAudit: z.any().optional(),
+    supervisorDecision: z.object({ route: z.enum(["direct_plan", "retrieve_and_search", "retrieve_only"]), reason: z.string() }).optional(),
+    autoDecision: z.object({ needSearch: z.boolean(), query: z.string().optional(), reason: z.string().optional() }).optional(),
+    autoWebSearchResults: z.object({
+      query: z.string(), results: z.array(z.object({ title: z.string().optional(), url: z.string().optional(), description: z.string().optional() })),
+    }).optional(),
+    autoCandidates: z.array(candidateSchema).optional(),
+    autoPick: z.object({ announce: z.string(), selectedUrl: z.string(), selectedTitle: z.string().optional() }).optional(),
+    autoFetchedCandidates: z.array(candidateSchema.extend({ markdown: z.string(), summary: z.string(), chars: z.number() })).optional(),
+    autoFetched: z.object({ url: z.string(), markdown: z.string() }).optional(),
+    autoAudit: z.object({
+      issues: z.array(z.object({
+        type: z.enum(["conflict", "missing_context", "outdated_info", "suggested_link"]),
+        severity: z.enum(["low", "medium", "high"]), message: z.string(), evidence: z.array(z.string()).optional(),
+        source: z.enum(["mcp", "local_skill", "merged"]), confidence: z.number().optional(), relatedNoteIds: z.array(z.string()).optional(),
+      })),
+      suggestedNoteIds: z.array(z.string()),
+      counts: z.object({ conflicts: z.number(), fillGaps: z.number(), suggested: z.number() }),
+    }).optional(),
 
-    hitl: z.any().optional(),
+    hitl: z.object({
+      waitingFor: z.literal("source_url"), reason: z.string(), requestedAt: z.string(), overrideUrl: z.string().optional(),
+      resumedAt: z.string().optional(), resumeReason: z.string().optional(), resumePayloadSchema: z.string().optional(),
+      resumedFromCheckpointId: z.string().optional(), humanInputSnapshot: z.string().optional(),
+    }).optional(),
   });
 
   const builder = new StateGraph(State)
@@ -650,7 +693,7 @@ function buildNextClawGraph() {
       };
     })
     .addNode("hitl_need_url", async (state) => {
-      // 进入等待：写一个明确步骤，并把任务置为 CANCELLED（等待用户提供 URL 再继续）
+      // 进入可恢复等待态，等待用户提供 URL 后在同一 thread 上继续。
       if (isDone(state.steps, "hitl-need-url")) return state;
       const s: LearningJobStepRecord = {
         id: "hitl-need-url",
@@ -665,7 +708,7 @@ function buildNextClawGraph() {
       await prisma.learningJob.updateMany({
         where: { id: state.jobId },
         data: {
-          status: "CANCELLED",
+          status: "WAITING_INPUT",
           finishedAt: new Date(),
           lastError: "等待用户提供来源 URL（HITL）",
         },
@@ -1110,17 +1153,7 @@ function buildNextClawGraph() {
       await ensureNotInterrupted(state.jobId);
       if (isDone(state.steps, "plan-exec")) return state;
 
-      const planStepsRaw = Array.isArray(state.plan?.steps) ? state.plan!.steps : [];
-      const planSteps = planStepsRaw
-        .map((x: unknown) =>
-          x && typeof x === "object" ? (x as { id?: unknown; title?: unknown; tool?: unknown }) : {},
-        )
-        .map((x: { id?: unknown; title?: unknown; tool?: unknown }) => ({
-          id: typeof x.id === "string" && x.id.trim() ? x.id.trim() : "",
-          title: typeof x.title === "string" && x.title.trim() ? x.title.trim() : "执行一步",
-          tool: typeof x.tool === "string" ? x.tool : x.tool === null ? null : null,
-        }))
-        .filter((x: { id: string }) => x.id);
+      const planSteps = normalizePlanSteps(state.plan?.steps);
 
       const s0: LearningJobStepRecord = {
         id: "plan-exec",
@@ -1566,11 +1599,7 @@ function buildNextClawGraph() {
     .addEdge("load_and_retrieve", "supervisor")
     .addConditionalEdges(
       "supervisor",
-      (s) => {
-        if (s.supervisorDecision?.route === "direct_plan") return "plan";
-        if (s.supervisorDecision?.route === "retrieve_and_search") return "reason";
-        return "reason";
-      },
+      routeAfterSupervisor,
       {
         plan: "planner_node",
         reason: "auto_reason",
@@ -1578,10 +1607,7 @@ function buildNextClawGraph() {
     )
     .addConditionalEdges(
       "auto_reason",
-      (s) => {
-        if (s.autoDecision?.needSearch && s.autoDecision?.query) return "need_search";
-        return "skip";
-      },
+      routeAfterReason,
       {
         need_search: "auto_web_search",
         skip: "planner_node",
@@ -1589,13 +1615,7 @@ function buildNextClawGraph() {
     )
     .addConditionalEdges(
       "auto_web_search",
-      (s) => {
-        if (s.steps?.at(-1)?.status === "failed") return "skip";
-        // web_search 无结果：进入 HITL 等待用户输入 URL
-        if (Array.isArray(s.autoWebSearchResults?.results) && s.autoWebSearchResults!.results.length === 0) return "need_url";
-        if (!s.autoWebSearchResults?.results?.length) return "skip";
-        return "go";
-      },
+      routeAfterWebSearch,
       {
         go: "auto_filter",
         need_url: "hitl_need_url",
@@ -1604,25 +1624,26 @@ function buildNextClawGraph() {
     )
     .addConditionalEdges(
       "auto_filter",
-      (s) => (s.autoPick?.selectedUrl ? "go" : "skip"),
+      routeAfterFilter,
       { go: "auto_fetch", skip: "planner_node" },
     )
     .addConditionalEdges(
       "auto_fetch",
-      (s) => (s.autoFetched?.markdown ? "go" : "skip"),
+      routeAfterFetch,
       { go: "auto_audit", skip: "planner_node" },
     )
     .addEdge("auto_audit", "planner_node")
     .addConditionalEdges(
       "planner_node",
-      (s) => (Array.isArray(s.plan?.steps) && s.plan!.steps.length > 0 ? "exec" : "skip"),
+      routeAfterPlanner,
       { exec: "plan_executor", skip: "coach" },
     )
     .addConditionalEdges(
       "plan_executor",
-      (s) => (s.hitl?.waitingFor === "source_url" ? "need_url" : "go"),
+      routeAfterExecutor,
       { need_url: "hitl_need_url", go: "coach" },
     )
+    .addEdge("hitl_need_url", END)
     .addEdge("coach", "persist")
     .addEdge("persist", "finalize")
     .addEdge("finalize", END);
@@ -1645,11 +1666,14 @@ export async function runNextClawLangGraphJob(params: {
   const graph = buildNextClawGraph().compile({ checkpointer });
 
   const threadConfig: CheckpointConfig = { configurable: { thread_id: params.jobId } };
+  const controlRow = await prisma.learningJob.findUnique({ where: { id: params.jobId }, select: { plan: true } });
+  const controlPlan = asObject(controlRow?.plan) as HitlPlanMeta | null;
+  const forceFreshReplay = controlPlan?.__hitl?.forceFreshReplay === true;
   // 尝试从 checkpointer 读取最近一次 checkpoint（若存在，则在同 thread 上继续）。
   // 这会让 resume 更接近“真正恢复”而不是完全重跑。
   try {
     const resumableCheckpointer = checkpointer as CheckpointerWithTuple;
-    if (typeof resumableCheckpointer.getTuple === "function") {
+    if (!forceFreshReplay && typeof resumableCheckpointer.getTuple === "function") {
       const tuple = await resumableCheckpointer.getTuple(threadConfig);
       const ckptConfig = tuple?.config?.configurable ?? null;
       if (ckptConfig?.checkpoint_id) {
@@ -1790,4 +1814,3 @@ export async function runNextClawLangGraphJob(params: {
     });
   }
 }
-

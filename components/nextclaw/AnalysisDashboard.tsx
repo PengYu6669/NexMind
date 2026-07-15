@@ -104,7 +104,7 @@ export function AnalysisDashboard({
   const points = polygonPoints(axes.map((a) => a.value));
   const ribbonData: NextClawDashboardRibbon[] = ribbon?.length ? ribbon : DEFAULT_RIBBON;
 
-  const queue = reviewQueue?.slice(0, 5) ?? [];
+  const queue = useMemo(() => reviewQueue?.slice(0, 5) ?? [], [reviewQueue]);
   const [activeReviewId, setActiveReviewId] = useState<string | null>(null);
   const [timelineFilterDate, setTimelineFilterDate] = useState<string | null>(null);
   const [answer, setAnswer] = useState("");

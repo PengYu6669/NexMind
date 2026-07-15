@@ -1,8 +1,12 @@
+import { timingSafeEqual } from "node:crypto";
+
 export function verifyInternalCron(req: Request): boolean {
   const token = process.env.INTERNAL_CRON_TOKEN?.trim();
   if (!token) return false;
   const auth = req.headers.get("authorization")?.trim();
-  return auth === `Bearer ${token}`;
+  const expected = Buffer.from(`Bearer ${token}`);
+  const actual = Buffer.from(auth ?? "");
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
 }
 
 export function internalCronAuthError() {

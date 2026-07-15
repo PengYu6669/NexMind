@@ -1,4 +1,3 @@
-import { randomBytes } from "crypto";
 import path from "path";
 import { mkdir, readFile, writeFile } from "fs/promises";
 import { Readable } from "stream";
@@ -137,7 +136,7 @@ export async function downloadChatFileBuffer(params: { storageKey: string }): Pr
   const body = (out as { data?: unknown }).data ?? (out as { body?: unknown }).body;
   if (Buffer.isBuffer(body)) return body;
   if (body instanceof Uint8Array) return Buffer.from(body);
-  if (typeof (body as any)?.arrayBuffer === "function") {
+  if (typeof body === "object" && body !== null && "arrayBuffer" in body && typeof body.arrayBuffer === "function") {
     const ab = await (body as Blob).arrayBuffer();
     return Buffer.from(ab);
   }

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getAuthUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { createNoteInputSchema, firstValidationMessage } from "@/lib/api-inputs";
 
 /** 工作台对话区 / 关联笔记选择器：query limit 默认 50，最大 200 */
 export async function GET(req: Request) {
@@ -26,19 +27,17 @@ export async function POST(req: Request) {
   const user = await getAuthUser();
   if (!user) return NextResponse.json({ error: "未登录" }, { status: 401 });
 
-  const body = (await req.json().catch(() => ({}))) as {
-    title?: string;
-    folderId?: string | null;
-  };
-
-  const titleRaw = typeof body.title === "string" ? body.title.trim() : "";
+  const parsed = createNoteInputSchema.safeParse(await req.json().catch(() => ({})));
+  if (!parsed.success) return NextResponse.json({ error: firstValidationMessage(parsed.error) }, { status: 400 });
+  const body = parsed.data;
+  const titleRaw = body.title ?? "";
   const title = titleRaw || "无标题";
 
   let folderId: string | null | undefined;
   if (body.folderId !== undefined) {
     if (body.folderId === null) {
       folderId = null;
-    } else if (typeof body.folderId === "string") {
+    } else {
       const fo = await prisma.noteFolder.findFirst({
         where: { id: body.folderId, userId: user.id },
         select: { id: true },
@@ -47,8 +46,6 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: "文件夹不存在" }, { status: 400 });
       }
       folderId = body.folderId;
-    } else {
-      return NextResponse.json({ error: "folderId 无效" }, { status: 400 });
     }
   }
 

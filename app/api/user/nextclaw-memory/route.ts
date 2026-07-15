@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getAuthUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { NEXTCLAW_MEMORY_SCOPE } from "@/lib/nextclaw-memory";
+import { firstValidationMessage, memorySettingInputSchema } from "@/lib/api-inputs";
 
 /** NextClaw 记忆：开关、最近快照、清空（仅 UserMemory，不删 LearningSnapshot） */
 export async function GET() {
@@ -40,10 +41,9 @@ export async function PATCH(req: Request) {
   const user = await getAuthUser();
   if (!user) return NextResponse.json({ error: "未登录" }, { status: 401 });
 
-  const body = (await req.json()) as { memoryEnabled?: unknown };
-  if (typeof body.memoryEnabled !== "boolean") {
-    return NextResponse.json({ error: "需要 memoryEnabled 布尔值" }, { status: 400 });
-  }
+  const parsed = memorySettingInputSchema.safeParse(await req.json().catch(() => ({})));
+  if (!parsed.success) return NextResponse.json({ error: firstValidationMessage(parsed.error) }, { status: 400 });
+  const body = parsed.data;
 
   await prisma.userSettings.upsert({
     where: { userId: user.id },

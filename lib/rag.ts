@@ -8,7 +8,7 @@ import { rewriteQueryForRag } from "@/lib/rag-query-rewriter";
 const ENV_EMBEDDING_URL = "AI_API_EMBEDDING_URL";
 
 /** 未配置 AI_EMBEDDING_DIMENSION 且模型名无法识别时的兜底（OpenAI text-embedding-3-small 等） */
-const DEFAULT_EMBEDDING_DIM = 1536;
+const DEFAULT_EMBEDDING_DIM = 1024;
 
 /**
  * 火山 doubao-embedding-vision-251215（Seed1.6-Embedding-1215）默认 **2048** 维；
@@ -351,10 +351,33 @@ export async function ensureRagSchema(): Promise<void> {
   return ragSchemaPromise;
 }
 
+export async function validateRagSchema(dim = getExpectedEmbeddingDim()): Promise<void> {
+  const rows = await prisma.$queryRawUnsafe<Array<{ table_name: string; embedding_type: string }>>(`
+    SELECT c.table_name, format_type(a.atttypid, a.atttypmod) AS embedding_type
+    FROM information_schema.columns c
+    JOIN pg_class t ON t.relname = c.table_name
+    JOIN pg_namespace n ON n.oid = t.relnamespace AND n.nspname = c.table_schema
+    JOIN pg_attribute a ON a.attrelid = t.oid AND a.attname = c.column_name
+    WHERE c.table_schema = 'public'
+      AND c.column_name = 'embedding'
+      AND c.table_name IN ('note_chunks', 'source_embedding_chunks')
+  `);
+  const expected = `vector(${dim})`;
+  const validTables = new Set(rows.filter((row) => row.embedding_type === expected).map((row) => row.table_name));
+  if (!validTables.has("note_chunks") || !validTables.has("source_embedding_chunks")) {
+    throw new Error(`RAG 数据库结构未就绪：需要两张 ${expected} 向量表，请先执行 npm run db:deploy`);
+  }
+}
+
 async function runEnsureRagSchema(): Promise<void> {
   const dim = getExpectedEmbeddingDim();
   if (!Number.isInteger(dim)) {
     throw new Error("AI_EMBEDDING_DIMENSION 必须为整数");
+  }
+  const allowRuntimeMigration = process.env.NODE_ENV !== "production" || process.env.RAG_SCHEMA_AUTO_MIGRATE === "true";
+  if (!allowRuntimeMigration) {
+    await validateRagSchema(dim);
+    return;
   }
   await prisma.$executeRawUnsafe(`CREATE EXTENSION IF NOT EXISTS vector;`);
   await prisma.$executeRawUnsafe(`CREATE EXTENSION IF NOT EXISTS pg_trgm;`);
