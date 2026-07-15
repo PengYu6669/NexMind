@@ -48,6 +48,7 @@ function jobStatusLabel(s: string) {
     FAILED: "失败",
     SKIPPED: "已跳过",
     CANCELLED: "已取消",
+    WAITING_INPUT: "等待输入",
   };
   return map[s] ?? s;
 }

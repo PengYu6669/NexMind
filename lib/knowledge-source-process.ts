@@ -1,9 +1,10 @@
-import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters";
 import mammoth from "mammoth";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { baiduOcrAccurateBasic, baiduOcrPdf } from "@/lib/baidu-ocr";
 import { deleteKnowledgeSourceRagChunks, indexKnowledgeSourceForRag } from "@/lib/rag";
 import { downloadChatFileBuffer } from "@/lib/tos-chat-upload";
+import { buildStructuredChunks } from "@/lib/rag-chunking";
 
 const TEXT_MAX = 500_000;
 
@@ -95,24 +96,25 @@ export async function processKnowledgeSource(sourceId: string): Promise<void> {
     await prisma.sourceChunk.deleteMany({ where: { sourceId } });
     await deleteKnowledgeSourceRagChunks(sourceId);
 
-    const splitter = new RecursiveCharacterTextSplitter({
-      chunkSize: 700,
-      chunkOverlap: 120,
+    const structuredChunks = await buildStructuredChunks({
+      title: row.title,
+      text,
+      sourceKind: "knowledge_source",
     });
-    const docs = await splitter.createDocuments([`${row.title}\n\n${text}`]);
-    let chunks = docs.map((d) => d.pageContent.trim()).filter(Boolean).slice(0, 60);
-    if (!chunks.length && text.trim()) {
-      chunks = [text.trim().slice(0, 12000)];
-    }
+    const chunks = structuredChunks.map((c) => c.content).filter(Boolean);
+    const searchTexts = structuredChunks.map((c) => c.searchText);
 
     if (chunks.length) {
       await prisma.sourceChunk.createMany({
-        data: chunks.map((c, i) => ({
+        data: structuredChunks.map((chunk, i) => ({
           userId: row.userId,
           sourceId,
           chunkIndex: i,
-          content: c,
-          tokenCount: null,
+          content: chunk.content,
+          tokenCount: chunk.tokenCount,
+          pageStart: chunk.pageStart ?? null,
+          pageEnd: chunk.pageEnd ?? null,
+          metadata: (chunk.metadata ?? undefined) as Prisma.InputJsonValue | undefined,
         })),
       });
       await indexKnowledgeSourceForRag({
@@ -120,6 +122,7 @@ export async function processKnowledgeSource(sourceId: string): Promise<void> {
         sourceId,
         title: row.title,
         chunks,
+        searchTexts,
       });
     }
 

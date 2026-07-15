@@ -10,7 +10,12 @@ export type AuthUser = {
 };
 
 export function getJwtSecret(): string {
-  return process.env.AUTH_JWT_SECRET || process.env.JWT_SECRET || "dev-insecure-secret";
+  const secret = process.env.AUTH_JWT_SECRET || process.env.JWT_SECRET;
+  if (secret) return secret;
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("生产环境必须配置 AUTH_JWT_SECRET");
+  }
+  return "dev-insecure-secret";
 }
 
 export async function getAuthUser(): Promise<AuthUser | null> {

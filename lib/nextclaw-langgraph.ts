@@ -5,11 +5,25 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { ragSearch, stripHtmlToText } from "@/lib/rag";
 import { buildKbDigestFromRelated } from "@/lib/nextclaw-kb-digest";
-import { auditorAgent, plannerAgent, coachAgent, retrieverAgent, roleLabel } from "@/lib/nextclaw-multi-agent";
-import type { LearningJobStepRecord } from "@/lib/nextclaw-agent-types";
+import {
+  auditorAgent,
+  coachAgent,
+  plannerAgent,
+  retrieverAgent,
+  roleLabel,
+  sourceAnalystAgent,
+  supervisorAgent,
+  type AgentRole,
+} from "@/lib/nextclaw-multi-agent";
+import type {
+  LearningJobStepRecord,
+  NextClawAuditIssue,
+  NextClawAuditSummary,
+  NextClawHitlState,
+} from "@/lib/nextclaw-agent-types";
 import type { NextClawAutoLearnLiteCard } from "@/lib/nextclaw-auto-learn";
 import { executeTool } from "@/lib/nextclaw-agent-tools";
-import { decideNeedWebSearch, pickBestByHeuristic } from "@/lib/nextclaw-autonomous-loop";
+import { pickBestByHeuristic } from "@/lib/nextclaw-autonomous-loop";
 import { policyOf } from "@/lib/nextclaw-orchestrator-policy";
 import {
   createExecutionMetrics,
@@ -17,50 +31,114 @@ import {
   shouldRetryTool,
   toEvaluationSummary,
 } from "@/lib/nextclaw-workflow-policy";
-import { RAG_TOPK_DEEP, RAG_TOPK_LITE } from "@/lib/nextclaw-agent-config";
-import type { PlanToolName } from "@/lib/nextclaw-agent-types";
+import {
+  PARALLEL_AUDIT_ENABLED,
+  PARALLEL_FETCH_LIMIT,
+  RAG_TOPK_DEEP,
+  RAG_TOPK_LITE,
+  SUPERVISOR_LLM_ROUTING,
+} from "@/lib/nextclaw-agent-config";
+import type { LearningPlanStepDraft, PlanToolName } from "@/lib/nextclaw-agent-types";
 import { runNextClawSkill } from "@/lib/nextclaw-skills";
 import { emitLearningJobEvent } from "@/lib/learning-job-events";
+import {
+  routeAfterExecutor,
+  routeAfterFetch,
+  routeAfterFilter,
+  routeAfterPlanner,
+  routeAfterReason,
+  routeAfterSupervisor,
+  routeAfterWebSearch,
+} from "@/lib/nextclaw-routing";
+import { normalizePlanSteps } from "@/lib/nextclaw-plan";
 
 type JobType = "NOTE_LEARN_LITE" | "NOTE_LEARN_DEEP";
 
 type RelatedNote = { noteId: string; title: string; snippet: string; distance?: number };
+type RoleStats = Record<AgentRole, number>;
+type CandidateSource = { url: string; title?: string; description?: string; trustScore: number; trustLevel: string };
+type FetchedCandidate = CandidateSource & { markdown: string; summary: string; chars: number };
+type HitlPlanMeta = { __hitl?: { overrideUrl?: string; forceFreshReplay?: boolean } };
+type WebSearchToolData = {
+  query?: string;
+  results?: Array<{ title?: string; url?: string; description?: string }>;
+  warning?: string;
+};
+type CheckpointConfig = {
+  configurable?: {
+    thread_id?: string;
+    checkpoint_id?: string;
+    checkpoint_ns?: string;
+  };
+};
+type CheckpointTupleLike = {
+  config?: CheckpointConfig;
+  checkpoint?: {
+    channel_values?: unknown;
+  };
+};
+type CheckpointerWithTuple = {
+  getTuple?: (config: CheckpointConfig) => Promise<CheckpointTupleLike | null>;
+};
+type PersistCard = {
+  type: NextClawAutoLearnLiteCard["type"];
+  title: string;
+  contentMd: string;
+  sources?: unknown;
+};
 
+/**
+ * NextClaw LangGraph 全局状态。
+ *
+ * 字段按 5 个逻辑子状态分组（详见 lib/nextclaw-agent-types.ts）：
+ * - DocumentSubState:  load_and_retrieve 生产，其余只读
+ * - RetrievalSubState: supervisor + auto_* 节点生产，planner 只读消费
+ * - PlanSubState:      planner_node / plan_executor 生产
+ * - AuditSubState:     auto_audit 生产
+ * - RuntimeSubState:   graph runner 初始化，所有节点可读
+ *
+ * 所有权映射见 NEXTCLAW_STATE_OWNERSHIP。
+ */
 export type NextClawLangGraphState = {
+  // ── 运行时态（graph runner 初始化，只读）──
   jobId: string;
   userId: string;
   noteId: string;
   jobType: JobType;
 
+  // ── 文档态（load_and_retrieve 生产）──
   noteTitle: string | undefined;
   noteHtml: string | undefined;
   noteText: string | undefined;
   noteSourceType: string | undefined;
-
   relatedNotes: RelatedNote[] | undefined;
   relatedLines: string[] | undefined;
   kbDigest: string | undefined;
 
-  plan: { steps: Array<{ id: string; title: string; tool: string | null }> } | undefined;
-
+  // ── 计划态（planner_node / plan_executor 生产）──
+  plan: { steps: LearningPlanStepDraft[] } | undefined;
   toolTraceLines: string[] | undefined;
-  roleStats: Record<"planner" | "retriever" | "auditor" | "coach" | "scheduler", number> | undefined;
+
+  // ── 运行时态（各节点追加）──
+  roleStats: RoleStats | undefined;
   metrics: ReturnType<typeof createExecutionMetrics> | undefined;
-
   steps: LearningJobStepRecord[] | undefined;
-
   coachResult: unknown | undefined;
 
-  // autonomous loop (single round for now)
+  // ── 检索态（supervisor + auto_* 节点生产）──
   autoDecision: { needSearch: boolean; query?: string; reason?: string } | undefined;
+  supervisorDecision: { route: "direct_plan" | "retrieve_and_search" | "retrieve_only"; reason: string } | undefined;
   autoWebSearchResults: { query: string; results: Array<{ title?: string; url?: string; description?: string }> } | undefined;
+  autoCandidates: CandidateSource[] | undefined;
   autoPick: { announce: string; selectedUrl: string; selectedTitle?: string } | undefined;
+  autoFetchedCandidates: FetchedCandidate[] | undefined;
   autoFetched: { url: string; markdown: string } | undefined;
-  autoAudit: { conflicts?: string[]; fillGaps?: string[]; suggestedNoteIds?: string[] } | undefined;
 
-  hitlOverrideUrl: string | undefined;
+  // ── 审计态（auto_audit 生产）──
+  autoAudit: NextClawAuditSummary | undefined;
 
-  waitingForUrl: boolean | undefined;
+  // ── 运行时态（HITL 挂起/恢复）──
+  hitl: NextClawHitlState | undefined;
 };
 
 function pickDefaultUrlFromText(noteText: string): string | null {
@@ -93,6 +171,33 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function createRoleStats(): RoleStats {
+  return {
+    supervisor: 0,
+    planner: 0,
+    retriever: 0,
+    source_analyst: 0,
+    auditor: 0,
+    coach: 0,
+    scheduler: 0,
+  };
+}
+
+function summarizeText(input: string | undefined, max = 160): string {
+  const text = String(input ?? "").replace(/\s+/g, " ").trim();
+  return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
+function asObject(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function asPlanToolInput(value: unknown): Record<string, unknown> | undefined {
+  const obj = asObject(value);
+  return obj ? { ...obj } : undefined;
+}
+
 async function ensureNotInterrupted(jobId: string) {
   const latest = await prisma.learningJob.findUnique({ where: { id: jobId }, select: { status: true } });
   if (!latest) throw new Error("任务不存在");
@@ -105,8 +210,8 @@ async function flushSteps(jobId: string, steps: LearningJobStepRecord[], extra?:
   const r = await prisma.learningJob.updateMany({
     where: { id: jobId },
     data: {
-      steps: steps as any,
-      ...(extra?.plan ? { plan: extra.plan as any } : {}),
+      steps,
+      ...(extra?.plan ? { plan: extra.plan } : {}),
     },
   });
   if (r.count === 0) {
@@ -126,26 +231,26 @@ async function flushSteps(jobId: string, steps: LearningJobStepRecord[], extra?:
 
 async function callToolWithPolicy(params: {
   jobId: string;
-  role: "planner" | "retriever" | "auditor" | "coach" | "scheduler";
+  role: AgentRole;
   toolName: Parameters<typeof executeTool>[0];
   ctx: Parameters<typeof executeTool>[1];
   metrics: ReturnType<typeof createExecutionMetrics>;
-  roleStats: NonNullable<NextClawLangGraphState["roleStats"]>;
+  roleStats: RoleStats;
   steps: LearningJobStepRecord[];
   retryStepLabel?: string;
 }) {
-  const policy = policyOf(params.role as any);
+  const policy = policyOf(params.role);
   let attempt = 0;
   while (true) {
     attempt += 1;
     params.metrics.toolCalls += 1;
     params.roleStats[params.role] += 1;
-    const r = await executeTool(params.toolName as any, params.ctx as any);
+    const r = await executeTool(params.toolName, params.ctx);
     if (r.ok) return r;
 
     const allowRetryByPolicy = attempt <= policy.maxRetries;
-    if (!allowRetryByPolicy || !shouldRetryTool(params.toolName as any, attempt, r)) {
-      markToolFailureEffect(params.toolName as any, r, params.metrics);
+    if (!allowRetryByPolicy || !shouldRetryTool(params.toolName, attempt, r)) {
+      markToolFailureEffect(params.toolName, r, params.metrics);
       return r;
     }
     params.metrics.retries += 1;
@@ -153,7 +258,7 @@ async function callToolWithPolicy(params: {
       params.steps.push({
         id: `${String(params.toolName)}-retry-${attempt}`,
         phase: "think",
-        label: `${roleLabel(params.role as any)}：${params.retryStepLabel}`,
+        label: `${roleLabel(params.role)}：${params.retryStepLabel}`,
         status: "done",
         at: nowIso(),
         toolSummary: `第 ${attempt + 1} 次重试：${r.summary}`,
@@ -171,7 +276,7 @@ function pushStep(state: NextClawLangGraphState, step: LearningJobStepRecord): N
 
 function updateLastStep(
   state: NextClawLangGraphState,
-  patch: Partial<Pick<LearningJobStepRecord, "status" | "toolSummary" | "label">>,
+  patch: Partial<Pick<LearningJobStepRecord, "status" | "toolSummary" | "label" | "meta">>,
 ): NextClawLangGraphState {
   const steps = Array.isArray(state.steps) ? [...state.steps] : [];
   if (!steps.length) return state;
@@ -202,7 +307,59 @@ async function buildCheckpointer() {
   return new MemorySaver();
 }
 
+function markStepMeta(
+  state: NextClawLangGraphState,
+  meta: NonNullable<LearningJobStepRecord["meta"]>,
+): NextClawLangGraphState {
+  const steps = Array.isArray(state.steps) ? [...state.steps] : [];
+  if (!steps.length) return state;
+  const last = steps[steps.length - 1]!;
+  steps[steps.length - 1] = {
+    ...last,
+    meta: {
+      ...(last.meta ?? {}),
+      ...meta,
+      communication: meta.communication ?? last.meta?.communication,
+    },
+  };
+  return { ...state, steps };
+}
+
+function withAgentTrace(params: {
+  state: NextClawLangGraphState;
+  role: AgentRole;
+  inputSummary: string;
+  outputSummary: string;
+  handoffTo: NonNullable<LearningJobStepRecord["meta"]>["handoffTo"];
+  startedAtMs: number;
+  candidateCount?: number;
+  parallelTasks?: number;
+  toolDomain?: NonNullable<LearningJobStepRecord["meta"]>["toolDomain"];
+  communication?: string[];
+}) {
+  return markStepMeta(params.state, {
+    agentRole: params.role,
+    inputSummary: summarizeText(params.inputSummary, 180),
+    outputSummary: summarizeText(params.outputSummary, 220),
+    handoffTo: params.handoffTo,
+    durationMs: Math.max(0, Date.now() - params.startedAtMs),
+    ...(typeof params.candidateCount === "number" ? { candidateCount: params.candidateCount } : {}),
+    ...(typeof params.parallelTasks === "number" ? { parallelTasks: params.parallelTasks } : {}),
+    ...(params.toolDomain ? { toolDomain: params.toolDomain } : {}),
+    ...(params.communication?.length ? { communication: params.communication } : {}),
+  });
+}
+
 function buildNextClawGraph() {
+  const stepSchema = z.object({
+    id: z.string(), phase: z.enum(["idle", "think", "tool", "done"]), label: z.string(),
+    status: z.enum(["pending", "running", "done", "failed"]), toolName: z.string().optional(),
+    toolSummary: z.string().optional(), meta: z.record(z.string(), z.unknown()).optional(), at: z.string(),
+  });
+  const candidateSchema = z.object({
+    url: z.string(), title: z.string().optional(), description: z.string().optional(),
+    trustScore: z.number(), trustLevel: z.string(),
+  });
   const State = new StateSchema({
     jobId: z.string(),
     userId: z.string(),
@@ -214,26 +371,52 @@ function buildNextClawGraph() {
     noteText: z.string().optional(),
     noteSourceType: z.string().optional(),
 
-    relatedNotes: z.any().optional(),
-    relatedLines: z.any().optional(),
+    relatedNotes: z.array(z.object({ noteId: z.string(), title: z.string(), snippet: z.string(), distance: z.number().optional() })).optional(),
+    relatedLines: z.array(z.string()).optional(),
     kbDigest: z.string().optional(),
 
-    plan: z.any().optional(),
-    toolTraceLines: z.any().optional(),
-    roleStats: z.any().optional(),
-    metrics: z.any().optional(),
-    steps: z.any().optional(),
+    plan: z.object({ steps: z.array(z.object({
+      id: z.string(), title: z.string(),
+      tool: z.enum(["search_notes", "read_note", "web_search", "fetch_url", "audit_content", "synthesize", "noop"]).nullable(),
+      toolInput: z.record(z.string(), z.unknown()).optional(),
+    })) }).optional(),
+    toolTraceLines: z.array(z.string()).optional(),
+    roleStats: z.object({
+      supervisor: z.number(), planner: z.number(), retriever: z.number(), source_analyst: z.number(),
+      auditor: z.number(), coach: z.number(), scheduler: z.number(),
+    }).optional(),
+    metrics: z.object({
+      startedAtMs: z.number(), toolCalls: z.number(), retries: z.number(),
+      degraded: z.boolean(), needHumanIntervention: z.boolean(),
+    }).optional(),
+    steps: z.array(stepSchema).optional(),
 
-    coachResult: z.any().optional(),
+    coachResult: z.unknown().optional(),
 
-    autoDecision: z.any().optional(),
-    autoWebSearchResults: z.any().optional(),
-    autoPick: z.any().optional(),
-    autoFetched: z.any().optional(),
-    autoAudit: z.any().optional(),
+    supervisorDecision: z.object({ route: z.enum(["direct_plan", "retrieve_and_search", "retrieve_only"]), reason: z.string() }).optional(),
+    autoDecision: z.object({ needSearch: z.boolean(), query: z.string().optional(), reason: z.string().optional() }).optional(),
+    autoWebSearchResults: z.object({
+      query: z.string(), results: z.array(z.object({ title: z.string().optional(), url: z.string().optional(), description: z.string().optional() })),
+    }).optional(),
+    autoCandidates: z.array(candidateSchema).optional(),
+    autoPick: z.object({ announce: z.string(), selectedUrl: z.string(), selectedTitle: z.string().optional() }).optional(),
+    autoFetchedCandidates: z.array(candidateSchema.extend({ markdown: z.string(), summary: z.string(), chars: z.number() })).optional(),
+    autoFetched: z.object({ url: z.string(), markdown: z.string() }).optional(),
+    autoAudit: z.object({
+      issues: z.array(z.object({
+        type: z.enum(["conflict", "missing_context", "outdated_info", "suggested_link"]),
+        severity: z.enum(["low", "medium", "high"]), message: z.string(), evidence: z.array(z.string()).optional(),
+        source: z.enum(["mcp", "local_skill", "merged"]), confidence: z.number().optional(), relatedNoteIds: z.array(z.string()).optional(),
+      })),
+      suggestedNoteIds: z.array(z.string()),
+      counts: z.object({ conflicts: z.number(), fillGaps: z.number(), suggested: z.number() }),
+    }).optional(),
 
-    hitlOverrideUrl: z.string().optional(),
-    waitingForUrl: z.boolean().optional(),
+    hitl: z.object({
+      waitingFor: z.literal("source_url"), reason: z.string(), requestedAt: z.string(), overrideUrl: z.string().optional(),
+      resumedAt: z.string().optional(), resumeReason: z.string().optional(), resumePayloadSchema: z.string().optional(),
+      resumedFromCheckpointId: z.string().optional(), humanInputSnapshot: z.string().optional(),
+    }).optional(),
   });
 
   const builder = new StateGraph(State)
@@ -265,13 +448,10 @@ function buildNextClawGraph() {
     await flushSteps(next.jobId, next.steps!);
 
     const job = existingStepsRow;
+    const planMeta = asObject(job?.plan) as HitlPlanMeta | null;
     const hitlOverrideUrl =
-      job?.plan &&
-      typeof job.plan === "object" &&
-      !Array.isArray(job.plan) &&
-      typeof (job.plan as any)?.__hitl?.overrideUrl === "string" &&
-      String((job.plan as any).__hitl.overrideUrl).trim()
-        ? String((job.plan as any).__hitl.overrideUrl).trim()
+      typeof planMeta?.__hitl?.overrideUrl === "string" && planMeta.__hitl.overrideUrl.trim()
+        ? planMeta.__hitl.overrideUrl.trim()
         : undefined;
 
     if (!job?.noteId) throw new Error("缺少 noteId");
@@ -335,9 +515,64 @@ function buildNextClawGraph() {
       hitlOverrideUrl,
     };
   })
+    .addNode("supervisor", async (state) => {
+      await ensureNotInterrupted(state.jobId);
+      if (isDone(state.steps, "supervisor")) return state;
+
+      const startedAtMs = Date.now();
+      const s: LearningJobStepRecord = {
+        id: "supervisor",
+        phase: "think",
+        label: `${roleLabel("supervisor")}：判断任务路由与自治深度`,
+        status: "running",
+        at: nowIso(),
+      };
+      let next = pushStep(state, s);
+      await flushSteps(next.jobId, next.steps!);
+
+      const roleStats = next.roleStats ?? createRoleStats();
+      roleStats.supervisor += 1;
+      const decision = SUPERVISOR_LLM_ROUTING
+        ? await supervisorAgent.runWithLLM({
+            noteSourceType: state.noteSourceType,
+            noteText: state.noteText,
+            hasRelatedNotes: (state.relatedNotes?.length ?? 0) > 0,
+            requestedMode: state.jobType,
+            hitlOverrideUrl: state.hitl?.overrideUrl,
+          })
+        : supervisorAgent.run({
+            noteSourceType: state.noteSourceType,
+            noteText: state.noteText,
+            hasRelatedNotes: (state.relatedNotes?.length ?? 0) > 0,
+            requestedMode: state.jobType,
+            hitlOverrideUrl: state.hitl?.overrideUrl,
+          });
+
+      next = updateLastStep(next, {
+        status: "done",
+        toolSummary: `${decision.route}：${decision.reason}`,
+      });
+      next = withAgentTrace({
+        state: next,
+        role: "supervisor",
+        inputSummary: `sourceType=${state.noteSourceType ?? "unknown"}; related=${state.relatedNotes?.length ?? 0}; mode=${state.jobType}`,
+        outputSummary: decision.reason,
+        handoffTo:
+          decision.route === "direct_plan"
+            ? "planner"
+            : decision.route === "retrieve_and_search"
+              ? "retriever"
+              : "retriever",
+        startedAtMs,
+        communication: [`route=${decision.route}`],
+      });
+      await flushSteps(next.jobId, next.steps!);
+      return { ...next, roleStats, supervisorDecision: decision };
+    })
     .addNode("auto_reason", async (state) => {
       await ensureNotInterrupted(state.jobId);
       if (isDone(state.steps, "auto-reason")) return state;
+      const startedAtMs = Date.now();
 
       // capture 来源笔记正文已完整，无需联网搜索
       if (state.noteSourceType === "capture") {
@@ -350,6 +585,14 @@ function buildNextClawGraph() {
           toolSummary: "无需搜索：capture 笔记正文已完整",
         };
         let next = pushStep(state, s);
+        next = withAgentTrace({
+          state: next,
+          role: "retriever",
+          inputSummary: "capture 来源已具备完整正文",
+          outputSummary: "无需联网搜索",
+          handoffTo: "planner",
+          startedAtMs,
+        });
         await flushSteps(next.jobId, next.steps!);
         return { ...next, autoDecision: { needSearch: false, reason: "capture 笔记正文已完整" } };
       }
@@ -375,6 +618,14 @@ function buildNextClawGraph() {
           ? `需要搜索：${decision.query ?? ""}${decision.reason ? `（${decision.reason}）` : ""}`
           : "无需搜索：现有知识库已足够",
       });
+      next = withAgentTrace({
+        state: next,
+        role: "retriever",
+        inputSummary: `title=${state.noteTitle ?? ""}; kbDigestChars=${state.kbDigest?.length ?? 0}`,
+        outputSummary: decision.needSearch ? `需要补源：${decision.query ?? ""}` : "知识库上下文已足够",
+        handoffTo: decision.needSearch ? "retriever" : "planner",
+        startedAtMs,
+      });
       await flushSteps(next.jobId, next.steps!);
       return { ...next, autoDecision: decision };
     })
@@ -394,8 +645,7 @@ function buildNextClawGraph() {
       await flushSteps(next.jobId, next.steps!);
 
       const metrics = next.metrics ?? createExecutionMetrics();
-      const roleStats =
-        next.roleStats ?? { planner: 0, retriever: 0, auditor: 0, coach: 0, scheduler: 0 };
+      const roleStats = next.roleStats ?? createRoleStats();
 
       const jobNote = { id: state.noteId, title: state.noteTitle ?? "", content: state.noteHtml ?? "" };
       const r = await callToolWithPolicy({
@@ -423,10 +673,10 @@ function buildNextClawGraph() {
       if (!r.ok) {
         return { ...next, metrics, roleStats, toolTraceLines: trace, autoWebSearchResults: undefined };
       }
-      const d = r.data as { query?: string; results?: Array<{ title?: string; url?: string; description?: string }> } | null;
+      const d = r.data as WebSearchToolData | null;
       const results = Array.isArray(d?.results) ? d!.results! : [];
       if (results.length === 0) {
-        const warn = typeof (d as any)?.warning === "string" ? String((d as any).warning) : "";
+        const warn = typeof d?.warning === "string" ? d.warning : "";
         // 空结果：标记为可读的“无结果”，让后续路由进入 HITL 输入 URL，而不是静默跳过
         next = updateLastStep(next, {
           status: "done",
@@ -443,7 +693,7 @@ function buildNextClawGraph() {
       };
     })
     .addNode("hitl_need_url", async (state) => {
-      // 进入等待：写一个明确步骤，并把任务置为 CANCELLED（等待用户提供 URL 再继续）
+      // 进入可恢复等待态，等待用户提供 URL 后在同一 thread 上继续。
       if (isDone(state.steps, "hitl-need-url")) return state;
       const s: LearningJobStepRecord = {
         id: "hitl-need-url",
@@ -458,16 +708,25 @@ function buildNextClawGraph() {
       await prisma.learningJob.updateMany({
         where: { id: state.jobId },
         data: {
-          status: "CANCELLED",
+          status: "WAITING_INPUT",
           finishedAt: new Date(),
           lastError: "等待用户提供来源 URL（HITL）",
         },
       });
-      return { ...next, waitingForUrl: true };
+      return {
+        ...next,
+        hitl: {
+          waitingFor: "source_url",
+          reason: "搜索结果无可用 URL，等待用户提供来源链接",
+          requestedAt: nowIso(),
+          resumePayloadSchema: '{"overrideUrl":"string"}',
+        },
+      };
     })
     .addNode("auto_filter", async (state) => {
       await ensureNotInterrupted(state.jobId);
       if (isDone(state.steps, "auto-filter")) return state;
+      const startedAtMs = Date.now();
       const s: LearningJobStepRecord = {
         id: "auto-filter",
         phase: "think",
@@ -478,31 +737,69 @@ function buildNextClawGraph() {
       let next = pushStep(state, s);
       await flushSteps(next.jobId, next.steps!);
 
-      if (state.hitlOverrideUrl) {
+      if (state.hitl?.overrideUrl) {
         const trace = Array.isArray(next.toolTraceLines) ? next.toolTraceLines : [];
-        trace.push(`[hitl] overrideUrl=${state.hitlOverrideUrl}`);
+        trace.push(`[hitl] overrideUrl=${state.hitl.overrideUrl}`);
         const trust = runNextClawSkill("source_trust", {
-          url: state.hitlOverrideUrl,
+          url: state.hitl.overrideUrl,
           title: "人工指定来源",
           snippet: "",
           markdown: "",
         });
         next = updateLastStep(next, {
           status: "done",
-          toolSummary: `人工指定来源：${state.hitlOverrideUrl}；trust=${trust.level}/${trust.score}`,
+          toolSummary: `人工指定来源：${state.hitl.overrideUrl}；trust=${trust.level}/${trust.score}`,
+        });
+        next = withAgentTrace({
+          state: next,
+          role: "source_analyst",
+          inputSummary: `overrideUrl=${state.hitl.overrideUrl}`,
+          outputSummary: "采用人工指定来源，跳过自动筛选",
+          handoffTo: "source_analyst",
+          startedAtMs,
+          candidateCount: 1,
+          toolDomain: "web",
         });
         await flushSteps(next.jobId, next.steps!);
         return {
           ...next,
           toolTraceLines: trace,
+          autoCandidates: [
+            {
+              url: state.hitl.overrideUrl,
+              title: "人工指定来源",
+              description: "",
+              trustScore: trust.score,
+              trustLevel: trust.level,
+            },
+          ],
           autoPick: {
             announce: "已采用人工指定来源，跳过自动筛选。",
-            selectedUrl: state.hitlOverrideUrl,
+            selectedUrl: state.hitl.overrideUrl,
           },
         };
       }
 
       const results = state.autoWebSearchResults?.results ?? [];
+      const candidates: CandidateSource[] = results
+        .filter((x: { title?: string; url?: string; description?: string }) => typeof x.url === "string" && /^https?:\/\//.test(x.url ?? ""))
+        .map((x: { title?: string; url?: string; description?: string }) => {
+          const trust = runNextClawSkill("source_trust", {
+            url: x.url ?? "",
+            title: x.title ?? "",
+            snippet: x.description ?? "",
+            markdown: "",
+          });
+          return {
+            url: x.url ?? "",
+            title: x.title ?? "",
+            description: x.description ?? "",
+            trustScore: trust.score,
+            trustLevel: trust.level,
+          };
+        })
+        .sort((a: CandidateSource, b: CandidateSource) => b.trustScore - a.trustScore)
+        .slice(0, Math.max(1, PARALLEL_FETCH_LIMIT));
       const pick = pickBestByHeuristic(results);
       const picked = results.find((x: { url?: string }) => (x.url ?? "").trim() === (pick.selectedUrl ?? "").trim());
       const trust = runNextClawSkill("source_trust", {
@@ -520,13 +817,38 @@ function buildNextClawGraph() {
         status: "done",
         toolSummary: `${pick.announce}；trust=${trust.level}/${trust.score}`,
       });
+      const sourceSummary = sourceAnalystAgent.summarizeCandidates({
+        query: state.autoWebSearchResults?.query ?? "",
+        candidates: candidates.map((x) => ({
+          url: x.url,
+          title: x.title,
+          score: x.trustScore,
+          selected: x.url === pick.selectedUrl,
+        })),
+      });
+      next = withAgentTrace({
+        state: next,
+        role: "source_analyst",
+        inputSummary: `query=${state.autoWebSearchResults?.query ?? ""}; results=${results.length}`,
+        outputSummary: `${sourceSummary.summary}；${sourceSummary.detail}`,
+        handoffTo: "source_analyst",
+        startedAtMs,
+        candidateCount: candidates.length,
+        toolDomain: "web",
+      });
       await flushSteps(next.jobId, next.steps!);
-      return { ...next, toolTraceLines: trace, autoPick: { announce: pick.announce, selectedUrl: pick.selectedUrl, selectedTitle: pick.selectedTitle } };
+      return {
+        ...next,
+        toolTraceLines: trace,
+        autoCandidates: candidates,
+        autoPick: { announce: pick.announce, selectedUrl: pick.selectedUrl, selectedTitle: pick.selectedTitle },
+      };
     })
     .addNode("auto_fetch", async (state) => {
       await ensureNotInterrupted(state.jobId);
       if (isDone(state.steps, "auto-fetch")) return state;
       const url = state.autoPick?.selectedUrl ?? "";
+      const startedAtMs = Date.now();
       const s: LearningJobStepRecord = {
         id: "auto-fetch",
         phase: "tool",
@@ -539,40 +861,101 @@ function buildNextClawGraph() {
       await flushSteps(next.jobId, next.steps!);
 
       const metrics = next.metrics ?? createExecutionMetrics();
-      const roleStats =
-        next.roleStats ?? { planner: 0, retriever: 0, auditor: 0, coach: 0, scheduler: 0 };
+      const roleStats = next.roleStats ?? createRoleStats();
+      roleStats.source_analyst += 1;
       const jobNote = { id: state.noteId, title: state.noteTitle ?? "", content: state.noteHtml ?? "" };
-      const r = await callToolWithPolicy({
-        jobId: state.jobId,
-        role: "retriever",
-        toolName: "fetch_url",
-        ctx: {
-          userId: state.userId,
-          note: jobNote,
-          relatedNotes: state.relatedNotes ?? [],
-          toolInput: { url },
-        },
-        metrics,
-        roleStats,
-        steps: next.steps ?? [],
-        retryStepLabel: "网页抓取暂时失败，按策略自动重试",
-      });
+      const candidateInputs =
+        (state.autoCandidates?.length ? state.autoCandidates : []).slice(0, Math.max(1, PARALLEL_FETCH_LIMIT));
+      const fallbackCandidate =
+        candidateInputs.length === 0 && url
+          ? [{ url, title: state.autoPick?.selectedTitle, description: "", trustScore: 0, trustLevel: "unknown" }]
+          : candidateInputs;
+
+      const fetchResults = await Promise.all(
+        fallbackCandidate.map(async (candidate: CandidateSource, index: number) => {
+          const r = await callToolWithPolicy({
+            jobId: state.jobId,
+            role: "source_analyst",
+            toolName: "fetch_url",
+            ctx: {
+              userId: state.userId,
+              note: jobNote,
+              relatedNotes: state.relatedNotes ?? [],
+              toolInput: { url: candidate.url },
+              runtime: { channelKey: `fetch:${state.jobId}:${index}` },
+            },
+            metrics,
+            roleStats,
+            steps: next.steps ?? [],
+            retryStepLabel: "网页抓取暂时失败，按策略自动重试",
+          });
+          const d = r.data as { markdown?: string; url?: string } | null;
+          const markdown = typeof d?.markdown === "string" ? d.markdown : "";
+          return {
+            candidate,
+            result: r,
+            url: typeof d?.url === "string" ? d.url : candidate.url,
+            markdown,
+          };
+        }),
+      );
 
       const trace = Array.isArray(next.toolTraceLines) ? next.toolTraceLines : [];
-      trace.push(`[fetch_url] ${r.summary}`);
+      for (const row of fetchResults) {
+        trace.push(`[fetch_url:${row.candidate.title || row.candidate.url}] ${row.result.summary}`);
+      }
 
-      next = updateLastStep(next, { status: r.ok ? "done" : "failed", toolSummary: r.summary });
+      const fetchedCandidates = fetchResults
+        .filter((row) => row.result.ok && row.markdown.trim())
+        .map((row) => ({
+          ...row.candidate,
+          url: row.url,
+          markdown: row.markdown,
+          summary: row.result.summary,
+          chars: row.markdown.length,
+        }))
+        .sort((a, b) => {
+          if (b.trustScore !== a.trustScore) return b.trustScore - a.trustScore;
+          return b.chars - a.chars;
+        });
+      const bestFetched = fetchedCandidates[0];
+
+      next = updateLastStep(next, {
+        status: bestFetched ? "done" : "failed",
+        toolSummary: bestFetched
+          ? `并行抓取 ${fetchResults.length} 个候选，采用 ${bestFetched.title || bestFetched.url}（${bestFetched.chars} 字）`
+          : fetchResults[0]?.result.summary ?? "fetch_url：未抓取到可用正文",
+      });
+      next = withAgentTrace({
+        state: next,
+        role: "source_analyst",
+        inputSummary: `candidates=${fallbackCandidate.length}; picked=${state.autoPick?.selectedUrl ?? ""}`,
+        outputSummary: bestFetched
+          ? `抓取完成，采用 ${bestFetched.title || bestFetched.url}`
+          : "候选抓取失败，未得到可用正文",
+        handoffTo: bestFetched ? "auditor" : "planner",
+        startedAtMs,
+        candidateCount: fallbackCandidate.length,
+        parallelTasks: fallbackCandidate.length,
+        toolDomain: "web",
+        communication: fetchedCandidates.map((x) => `${x.title || x.url}:${x.chars}`),
+      });
       await flushSteps(next.jobId, next.steps!);
 
-      if (!r.ok) return { ...next, metrics, roleStats, toolTraceLines: trace };
-      const d = r.data as { markdown?: string; url?: string } | null;
-      const md = typeof d?.markdown === "string" ? d.markdown : "";
-      const finalUrl = typeof d?.url === "string" ? d.url : url;
-      return { ...next, metrics, roleStats, toolTraceLines: trace, autoFetched: md ? { url: finalUrl, markdown: md } : undefined };
+      if (!bestFetched) return { ...next, metrics, roleStats, toolTraceLines: trace, autoFetchedCandidates: [] };
+      return {
+        ...next,
+        metrics,
+        roleStats,
+        toolTraceLines: trace,
+        autoFetchedCandidates: fetchedCandidates,
+        autoFetched: { url: bestFetched.url, markdown: bestFetched.markdown },
+      };
     })
     .addNode("auto_audit", async (state) => {
       await ensureNotInterrupted(state.jobId);
       if (isDone(state.steps, "auto-audit")) return state;
+      const startedAtMs = Date.now();
       const s: LearningJobStepRecord = {
         id: "auto-audit",
         phase: "think",
@@ -585,10 +968,12 @@ function buildNextClawGraph() {
       await flushSteps(next.jobId, next.steps!);
 
       const metrics = next.metrics ?? createExecutionMetrics();
-      const roleStats =
-        next.roleStats ?? { planner: 0, retriever: 0, auditor: 0, coach: 0, scheduler: 0 };
+      const roleStats = next.roleStats ?? createRoleStats();
       const jobNote = { id: state.noteId, title: state.noteTitle ?? "", content: state.noteHtml ?? "" };
-      const r = await callToolWithPolicy({
+      const trace = Array.isArray(next.toolTraceLines) ? next.toolTraceLines : [];
+      const fetchedMarkdown = state.autoFetched?.markdown ?? "";
+
+      const remoteAuditPromise = callToolWithPolicy({
         jobId: state.jobId,
         role: "auditor",
         toolName: "audit_content",
@@ -596,25 +981,31 @@ function buildNextClawGraph() {
           userId: state.userId,
           note: jobNote,
           relatedNotes: state.relatedNotes ?? [],
-          toolInput: { newContent: state.autoFetched?.markdown ?? "" },
+          toolInput: { newContent: fetchedMarkdown },
+          runtime: { channelKey: `audit:${state.jobId}` },
         },
         metrics,
         roleStats,
         steps: next.steps ?? [],
       });
 
-      const trace = Array.isArray(next.toolTraceLines) ? next.toolTraceLines : [];
-      trace.push(`[audit_content] ${r.summary}`);
+      const localAuditPromise = Promise.resolve(
+        runNextClawSkill("conflict_audit", {
+          noteText: state.noteText ?? "",
+          fetchedMarkdown,
+          relatedNotes: (state.relatedNotes ?? []).map((n: RelatedNote) => ({
+            noteId: n.noteId,
+            title: n.title,
+            snippet: n.snippet ?? "",
+          })),
+        }),
+      );
 
-      const localAudit = runNextClawSkill("conflict_audit", {
-        noteText: state.noteText ?? "",
-        fetchedMarkdown: state.autoFetched?.markdown ?? "",
-        relatedNotes: (state.relatedNotes ?? []).map((n: RelatedNote) => ({
-          noteId: n.noteId,
-          title: n.title,
-          snippet: n.snippet ?? "",
-        })),
-      });
+      const [r, localAudit] = PARALLEL_AUDIT_ENABLED
+        ? await Promise.all([remoteAuditPromise, localAuditPromise])
+        : [await remoteAuditPromise, await localAuditPromise];
+
+      trace.push(`[audit_content] ${r.summary}`);
       trace.push(
         `[conflict_audit] conflicts=${localAudit.conflicts.length}; fillGaps=${localAudit.fillGaps.length}; evidence=${localAudit.evidence.length}`,
       );
@@ -628,12 +1019,44 @@ function buildNextClawGraph() {
         fillGaps: mergedFillGaps,
         suggestedNoteIds: mergedSuggested,
       });
+      const issues: NextClawAuditIssue[] = [
+        ...mergedConflicts.map((message) => ({
+          type: "conflict" as const,
+          severity: "high" as const,
+          message,
+          source: "merged" as const,
+          confidence: 0.78,
+          relatedNoteIds: mergedSuggested,
+        })),
+        ...mergedFillGaps.map((message) => ({
+          type: "missing_context" as const,
+          severity: "medium" as const,
+          message,
+          source: "merged" as const,
+          confidence: 0.7,
+          relatedNoteIds: mergedSuggested,
+        })),
+      ];
 
       next = updateLastStep(next, {
         status: r.ok ? "done" : "failed",
         toolSummary: r.ok
           ? `${r.summary}（conflicts=${auditSummary.conflicts}, fillGaps=${auditSummary.fillGaps}, suggested=${auditSummary.suggested}）`
           : r.summary,
+      });
+      next = withAgentTrace({
+        state: next,
+        role: "auditor",
+        inputSummary: `fetchedChars=${fetchedMarkdown.length}; related=${state.relatedNotes?.length ?? 0}`,
+        outputSummary: `conflicts=${auditSummary.conflicts}; fillGaps=${auditSummary.fillGaps}; suggested=${auditSummary.suggested}`,
+        handoffTo: "planner",
+        startedAtMs,
+        parallelTasks: PARALLEL_AUDIT_ENABLED ? 2 : 1,
+        toolDomain: "audit",
+        communication: [
+          `remote=${r.ok ? "ok" : "fail"}`,
+          `local=conflicts:${localAudit.conflicts.length}/fillGaps:${localAudit.fillGaps.length}`,
+        ],
       });
       await flushSteps(next.jobId, next.steps!);
 
@@ -643,9 +1066,9 @@ function buildNextClawGraph() {
         roleStats,
         toolTraceLines: trace,
         autoAudit: {
-          conflicts: mergedConflicts,
-          fillGaps: mergedFillGaps,
+          issues,
           suggestedNoteIds: mergedSuggested,
+          counts: auditSummary,
         },
       };
     })
@@ -654,6 +1077,7 @@ function buildNextClawGraph() {
     .addNode("planner_node", async (state) => {
     await ensureNotInterrupted(state.jobId);
     if (isDone(state.steps, "plan")) return state;
+    const startedAtMs = Date.now();
 
     // capture 来源笔记直接使用合成计划，跳过 AI 规划
     if (state.noteSourceType === "capture") {
@@ -666,10 +1090,19 @@ function buildNextClawGraph() {
         at: nowIso(),
         toolSummary: "capture 笔记正文已完整，跳过规划步骤",
       };
-      const roleStats = state.roleStats ?? { planner: 0, retriever: 0, auditor: 0, coach: 0, scheduler: 0 };
+      const roleStats = state.roleStats ?? createRoleStats();
       roleStats.planner += 1;
       let next = pushStep(state, s);
-      await flushSteps(next.jobId, next.steps!, { plan: fallbackPlan as any });
+      await flushSteps(next.jobId, next.steps!, { plan: fallbackPlan });
+      next = withAgentTrace({
+        state: next,
+        role: "planner",
+        inputSummary: "capture 来源正文已完整",
+        outputSummary: "跳过 AI 规划，直接使用 synthesize fallback plan",
+        handoffTo: "coach",
+        startedAtMs,
+      });
+      await flushSteps(next.jobId, next.steps!, { plan: fallbackPlan });
       return { ...next, plan: fallbackPlan, roleStats, metrics: state.metrics ?? next.metrics, toolTraceLines: state.toolTraceLines ?? next.toolTraceLines };
     }
 
@@ -687,7 +1120,7 @@ function buildNextClawGraph() {
       state.plan && typeof state.plan === "object" && Array.isArray((state.plan as { steps?: unknown }).steps)
         ? state.plan
         : null;
-    const roleStats = state.roleStats ?? { planner: 0, retriever: 0, auditor: 0, coach: 0, scheduler: 0 };
+    const roleStats = state.roleStats ?? createRoleStats();
     roleStats.planner += 1;
 
     const plan = existingPlan
@@ -696,13 +1129,22 @@ function buildNextClawGraph() {
           noteTitle: state.noteTitle ?? "",
           noteSnippet: state.noteText ?? "",
           relatedLines: state.relatedLines ?? [],
-          jobType: state.jobType as any,
+          jobType: state.jobType,
           urls: Array.from((state.noteText ?? "").matchAll(/https?:\/\/[^\s)>\]]+/g))
             .map((m) => m[0])
             .slice(0, 5),
         });
 
     next = updateLastStep(next, { status: "done", toolSummary: `steps=${plan.steps.length}` });
+    next = withAgentTrace({
+      state: next,
+      role: "planner",
+      inputSummary: `related=${state.relatedNotes?.length ?? 0}; autoAudit=${state.autoAudit?.issues.length ?? 0}`,
+      outputSummary: `生成 ${plan.steps.length} 个计划步骤`,
+      handoffTo: "retriever",
+      startedAtMs,
+      communication: plan.steps.slice(0, 6).map((step: { id: string; tool: string | null }) => `${step.id}:${step.tool ?? "noop"}`),
+    });
     await flushSteps(next.jobId, next.steps!, { plan });
 
     return { ...next, plan, roleStats, metrics: state.metrics ?? next.metrics, toolTraceLines: state.toolTraceLines ?? next.toolTraceLines };
@@ -711,17 +1153,7 @@ function buildNextClawGraph() {
       await ensureNotInterrupted(state.jobId);
       if (isDone(state.steps, "plan-exec")) return state;
 
-      const planStepsRaw = Array.isArray(state.plan?.steps) ? state.plan!.steps : [];
-      const planSteps = planStepsRaw
-        .map((x: unknown) =>
-          x && typeof x === "object" ? (x as { id?: unknown; title?: unknown; tool?: unknown }) : {},
-        )
-        .map((x: { id?: unknown; title?: unknown; tool?: unknown }) => ({
-          id: typeof x.id === "string" && x.id.trim() ? x.id.trim() : "",
-          title: typeof x.title === "string" && x.title.trim() ? x.title.trim() : "执行一步",
-          tool: typeof x.tool === "string" ? x.tool : x.tool === null ? null : null,
-        }))
-        .filter((x: { id: string }) => x.id);
+      const planSteps = normalizePlanSteps(state.plan?.steps);
 
       const s0: LearningJobStepRecord = {
         id: "plan-exec",
@@ -740,12 +1172,12 @@ function buildNextClawGraph() {
       }
 
       const metrics = next.metrics ?? createExecutionMetrics();
-      const roleStats = next.roleStats ?? { planner: 0, retriever: 0, auditor: 0, coach: 0, scheduler: 0 };
+      const roleStats = next.roleStats ?? createRoleStats();
       const trace = Array.isArray(next.toolTraceLines) ? next.toolTraceLines : [];
 
       const jobNote = { id: state.noteId, title: state.noteTitle ?? "", content: state.noteHtml ?? "" };
       const defaultUrl =
-        state.hitlOverrideUrl ||
+        state.hitl?.overrideUrl ||
         state.autoPick?.selectedUrl ||
         state.autoFetched?.url ||
         pickDefaultUrlFromText(state.noteText ?? "") ||
@@ -806,11 +1238,7 @@ function buildNextClawGraph() {
         next = pushStep(next, stepRec);
         await flushSteps(next.jobId, next.steps!);
 
-        const planToolInputRaw =
-          (ps as any)?.toolInput && typeof (ps as any).toolInput === "object" && !Array.isArray((ps as any).toolInput)
-            ? ((ps as any).toolInput as Record<string, unknown>)
-            : undefined;
-        const planToolInput = planToolInputRaw ? { ...planToolInputRaw } : undefined;
+        const planToolInput = asPlanToolInput(ps.toolInput);
 
         const toolInput =
           tool === "web_search"
@@ -862,18 +1290,26 @@ function buildNextClawGraph() {
         }
 
         // HITL：若计划执行遇到 fetch_url 但仍然没有可用 url，则进入等待用户提供来源
-        if (tool === "fetch_url" && typeof (toolInput as any)?.url === "string" && !(toolInput as any).url.trim()) {
+        if (tool === "fetch_url" && typeof toolInput?.url === "string" && !toolInput.url.trim()) {
           next = updateLastStep(next, {
             status: "done",
             toolSummary: "缺少可用 URL：需要你提供一个来源链接后才能继续（HITL）",
           });
           await flushSteps(next.jobId, next.steps!);
-          return { ...next, waitingForUrl: true };
+          return {
+            ...next,
+            hitl: {
+              waitingFor: "source_url",
+              reason: "计划执行需要来源 URL，但当前没有可用链接",
+              requestedAt: nowIso(),
+              resumePayloadSchema: '{"overrideUrl":"string"}',
+            },
+          };
         }
 
         const r = await callToolWithPolicy({
           jobId: state.jobId,
-          role: role as any,
+          role,
           toolName: tool,
           ctx: {
             userId: state.userId,
@@ -917,6 +1353,7 @@ function buildNextClawGraph() {
     .addNode("coach", async (state) => {
     await ensureNotInterrupted(state.jobId);
     if (isDone(state.steps, "coach")) return state;
+    const startedAtMs = Date.now();
 
     const s: LearningJobStepRecord = {
       id: "coach",
@@ -929,7 +1366,7 @@ function buildNextClawGraph() {
     let next = pushStep(state, s);
     await flushSteps(next.jobId, next.steps!);
 
-    const roleStats = state.roleStats ?? { planner: 0, retriever: 0, auditor: 0, coach: 0, scheduler: 0 };
+    const roleStats = state.roleStats ?? createRoleStats();
     roleStats.coach += 1;
 
     const toolTraceLines = Array.isArray(state.toolTraceLines) ? state.toolTraceLines : [];
@@ -946,7 +1383,7 @@ function buildNextClawGraph() {
     let reviewEnhanced = 0;
     let antiCopyPassed = 0;
     for (let i = 0; i < cards.length; i += 1) {
-      const c = cards[i] as { type?: string; title?: string; contentMd?: string } | undefined;
+      const c = cards[i] as PersistCard | undefined;
       if (!c || c.type !== "REVIEW") continue;
       const rq = runNextClawSkill("review_question", {
         cardTitle: c.title ?? "",
@@ -963,10 +1400,10 @@ function buildNextClawGraph() {
       ].join("\n");
       const hasReviewSection = /自测问题|参考答案要点/.test(c.contentMd ?? "");
       cards[i] = {
-        type: (c.type ?? "REVIEW") as NextClawAutoLearnLiteCard["type"],
+        type: c.type ?? "REVIEW",
         title: c.title ?? "",
         contentMd: hasReviewSection ? (c.contentMd ?? "") : `${c.contentMd ?? ""}\n\n${addon}`.trim(),
-        sources: (c as any)?.sources,
+        sources: c.sources,
       };
     }
 
@@ -975,13 +1412,23 @@ function buildNextClawGraph() {
       status: "done",
       toolSummary: `cards=${cards.length}; reviewEnhanced=${reviewEnhanced}; antiCopyPass=${antiCopyPassed}/${reviewEnhanced || 0}`,
     });
+    next = withAgentTrace({
+      state: next,
+      role: "coach",
+      inputSummary: `related=${state.relatedNotes?.length ?? 0}; traceLines=${toolTraceLines.length}`,
+      outputSummary: `产出 cards=${cards.length}; reviewEnhanced=${reviewEnhanced}`,
+      handoffTo: "scheduler",
+      startedAtMs,
+      communication: cards.slice(0, 4).map((card) => `${card.type}:${card.title}`),
+    });
     await flushSteps(next.jobId, next.steps!);
 
     return { ...next, roleStats, toolTraceLines, coachResult: liteWithReview, metrics: state.metrics ?? next.metrics };
   })
-    .addNode("persist", async (state: NextClawLangGraphState & { coachResult?: any }) => {
+    .addNode("persist", async (state: NextClawLangGraphState & { coachResult?: { cards?: PersistCard[] } }) => {
     await ensureNotInterrupted(state.jobId);
     if (isDone(state.steps, "persist")) return state;
+    const startedAtMs = Date.now();
 
     const s: LearningJobStepRecord = {
       id: "persist",
@@ -1011,8 +1458,8 @@ function buildNextClawGraph() {
     // 如果 autonomous audit 有结果，插入一张审计卡（让用户明确看到 agent 的“对账过程”）
     const audit = state.autoAudit;
     if (audit && cards.length) {
-      const conflicts = Array.isArray(audit.conflicts) ? audit.conflicts.slice(0, 6) : [];
-      const fillGaps = Array.isArray(audit.fillGaps) ? audit.fillGaps.slice(0, 6) : [];
+      const conflicts = audit.issues.filter((x) => x.type === "conflict").map((x) => x.message).slice(0, 6);
+      const fillGaps = audit.issues.filter((x) => x.type === "missing_context").map((x) => x.message).slice(0, 6);
       const suggestIds = Array.isArray(audit.suggestedNoteIds) ? audit.suggestedNoteIds.slice(0, 6) : [];
       const suggestNotes = suggestIds.length
         ? await prisma.note.findMany({
@@ -1051,10 +1498,10 @@ function buildNextClawGraph() {
     let guardPassed = 0;
     let guardFailed = 0;
     for (let i = 0; i < cards.length; i += 1) {
-      const c = cards[i] as { type?: string; title?: string; contentMd?: string } | undefined;
+      const c = cards[i] as PersistCard | undefined;
       if (!c) continue;
       const g = runNextClawSkill("card_quality_guard", {
-        type: (c.type as any) ?? "FILL_GAP",
+        type: c.type ?? "FILL_GAP",
         title: c.title ?? "",
         contentMd: c.contentMd ?? "",
       });
@@ -1077,7 +1524,7 @@ function buildNextClawGraph() {
 
     const cardNoteId = job.noteId!;
     await prisma.learningCard.createMany({
-      data: cards.map((c: any) => ({
+      data: cards.map((c: PersistCard) => ({
         userId: state.userId,
         noteId: cardNoteId,
         type: c.type,
@@ -1090,7 +1537,7 @@ function buildNextClawGraph() {
       })),
     });
 
-    const roleStats = state.roleStats ?? { planner: 0, retriever: 0, auditor: 0, coach: 0, scheduler: 0 };
+    const roleStats = state.roleStats ?? createRoleStats();
     roleStats.scheduler += 1;
     const dueDate = new Date(Date.now() + 24 * 60 * 60 * 1000);
     await prisma.reviewItem.upsert({
@@ -1103,6 +1550,15 @@ function buildNextClawGraph() {
       next,
       { status: "done", toolSummary: `cards=${cards.length}; qualityPass=${guardPassed}; qualityFail=${guardFailed}` },
     );
+    next = withAgentTrace({
+      state: next,
+      role: "scheduler",
+      inputSummary: `cards=${cards.length}; auditIssues=${state.autoAudit?.issues.length ?? 0}`,
+      outputSummary: `已落库 cards=${cards.length}; qualityFail=${guardFailed}`,
+      handoffTo: "end",
+      startedAtMs,
+      communication: [`reviewDue=${dueDate.toISOString()}`],
+    });
     await flushSteps(next.jobId, next.steps!);
 
     return { ...next, roleStats, metrics: state.metrics ?? next.metrics, toolTraceLines: state.toolTraceLines ?? next.toolTraceLines };
@@ -1112,7 +1568,7 @@ function buildNextClawGraph() {
     const metrics = state.metrics ?? createExecutionMetrics();
     const evaluation = toEvaluationSummary(metrics);
 
-    const roleStats = state.roleStats ?? { planner: 0, retriever: 0, auditor: 0, coach: 0, scheduler: 0 };
+    const roleStats = state.roleStats ?? createRoleStats();
 
     let next = state;
     next = pushStep(next, {
@@ -1140,13 +1596,18 @@ function buildNextClawGraph() {
     return next;
   })
     .addEdge(START, "load_and_retrieve")
-    .addEdge("load_and_retrieve", "auto_reason")
+    .addEdge("load_and_retrieve", "supervisor")
+    .addConditionalEdges(
+      "supervisor",
+      routeAfterSupervisor,
+      {
+        plan: "planner_node",
+        reason: "auto_reason",
+      },
+    )
     .addConditionalEdges(
       "auto_reason",
-      (s) => {
-        if (s.autoDecision?.needSearch && s.autoDecision?.query) return "need_search";
-        return "skip";
-      },
+      routeAfterReason,
       {
         need_search: "auto_web_search",
         skip: "planner_node",
@@ -1154,13 +1615,7 @@ function buildNextClawGraph() {
     )
     .addConditionalEdges(
       "auto_web_search",
-      (s) => {
-        if (s.steps?.at(-1)?.status === "failed") return "skip";
-        // web_search 无结果：进入 HITL 等待用户输入 URL
-        if (Array.isArray(s.autoWebSearchResults?.results) && s.autoWebSearchResults!.results.length === 0) return "need_url";
-        if (!s.autoWebSearchResults?.results?.length) return "skip";
-        return "go";
-      },
+      routeAfterWebSearch,
       {
         go: "auto_filter",
         need_url: "hitl_need_url",
@@ -1169,25 +1624,26 @@ function buildNextClawGraph() {
     )
     .addConditionalEdges(
       "auto_filter",
-      (s) => (s.autoPick?.selectedUrl ? "go" : "skip"),
+      routeAfterFilter,
       { go: "auto_fetch", skip: "planner_node" },
     )
     .addConditionalEdges(
       "auto_fetch",
-      (s) => (s.autoFetched?.markdown ? "go" : "skip"),
+      routeAfterFetch,
       { go: "auto_audit", skip: "planner_node" },
     )
     .addEdge("auto_audit", "planner_node")
     .addConditionalEdges(
       "planner_node",
-      (s) => (Array.isArray(s.plan?.steps) && s.plan!.steps.length > 0 ? "exec" : "skip"),
+      routeAfterPlanner,
       { exec: "plan_executor", skip: "coach" },
     )
     .addConditionalEdges(
       "plan_executor",
-      (s) => (s.waitingForUrl ? "need_url" : "go"),
+      routeAfterExecutor,
       { need_url: "hitl_need_url", go: "coach" },
     )
+    .addEdge("hitl_need_url", END)
     .addEdge("coach", "persist")
     .addEdge("persist", "finalize")
     .addEdge("finalize", END);
@@ -1209,12 +1665,16 @@ export async function runNextClawLangGraphJob(params: {
   const checkpointer = await buildCheckpointer();
   const graph = buildNextClawGraph().compile({ checkpointer });
 
-  const threadConfig: any = { configurable: { thread_id: params.jobId } };
+  const threadConfig: CheckpointConfig = { configurable: { thread_id: params.jobId } };
+  const controlRow = await prisma.learningJob.findUnique({ where: { id: params.jobId }, select: { plan: true } });
+  const controlPlan = asObject(controlRow?.plan) as HitlPlanMeta | null;
+  const forceFreshReplay = controlPlan?.__hitl?.forceFreshReplay === true;
   // 尝试从 checkpointer 读取最近一次 checkpoint（若存在，则在同 thread 上继续）。
   // 这会让 resume 更接近“真正恢复”而不是完全重跑。
   try {
-    if (typeof (checkpointer as any)?.getTuple === "function") {
-      const tuple = await (checkpointer as any).getTuple(threadConfig);
+    const resumableCheckpointer = checkpointer as CheckpointerWithTuple;
+    if (!forceFreshReplay && typeof resumableCheckpointer.getTuple === "function") {
+      const tuple = await resumableCheckpointer.getTuple(threadConfig);
       const ckptConfig = tuple?.config?.configurable ?? null;
       if (ckptConfig?.checkpoint_id) {
         threadConfig.configurable = {
@@ -1242,16 +1702,28 @@ export async function runNextClawLangGraphJob(params: {
           plan: resumed.plan,
           metrics: resumed.metrics ?? createExecutionMetrics(),
           toolTraceLines: resumed.toolTraceLines ?? [],
-          roleStats: resumed.roleStats ?? { planner: 0, retriever: 0, auditor: 0, coach: 0, scheduler: 0 },
+          roleStats: resumed.roleStats ?? createRoleStats(),
           steps: Array.isArray(resumed.steps) ? resumed.steps : [],
           coachResult: resumed.coachResult,
+          supervisorDecision: resumed.supervisorDecision,
           autoDecision: resumed.autoDecision,
           autoWebSearchResults: resumed.autoWebSearchResults,
+          autoCandidates: resumed.autoCandidates,
           autoPick: resumed.autoPick,
+          autoFetchedCandidates: resumed.autoFetchedCandidates,
           autoFetched: resumed.autoFetched,
           autoAudit: resumed.autoAudit,
-          hitlOverrideUrl: resumed.hitlOverrideUrl,
-          waitingForUrl: resumed.waitingForUrl ?? false,
+          hitl: resumed.hitl
+            ? {
+                ...resumed.hitl,
+                resumedFromCheckpointId: ckptConfig?.checkpoint_id ?? undefined,
+                resumeReason: resumed.hitl.overrideUrl ? "用户提供了来源 URL 后恢复执行" : "从 checkpoint 自动恢复",
+                humanInputSnapshot: resumed.hitl.overrideUrl
+                  ? `用户指定 URL: ${resumed.hitl.overrideUrl.slice(0, 180)}`
+                  : undefined,
+                resumePayloadSchema: resumed.hitl.resumePayloadSchema ?? '{"overrideUrl":"string"}',
+              }
+            : undefined,
         };
         await prisma.learningJob.updateMany({
           where: { id: params.jobId },
@@ -1276,7 +1748,7 @@ export async function runNextClawLangGraphJob(params: {
           await flushSteps(params.jobId, steps);
           await prisma.learningJob.updateMany({
             where: { id: params.jobId },
-            data: { status: "FAILED", finishedAt: new Date(), lastError: msg, steps: steps as any },
+            data: { status: "FAILED", finishedAt: new Date(), lastError: msg, steps },
           });
           return;
         }
@@ -1301,16 +1773,18 @@ export async function runNextClawLangGraphJob(params: {
     plan: undefined,
     metrics: createExecutionMetrics(),
     toolTraceLines: [],
-    roleStats: { planner: 0, retriever: 0, auditor: 0, coach: 0, scheduler: 0 },
+    roleStats: createRoleStats(),
     steps: [],
     coachResult: undefined,
+    supervisorDecision: undefined,
     autoDecision: undefined,
     autoWebSearchResults: undefined,
+    autoCandidates: undefined,
     autoPick: undefined,
+    autoFetchedCandidates: undefined,
     autoFetched: undefined,
     autoAudit: undefined,
-    hitlOverrideUrl: undefined,
-    waitingForUrl: false,
+    hitl: undefined,
   };
 
   await prisma.learningJob.updateMany({
@@ -1336,8 +1810,7 @@ export async function runNextClawLangGraphJob(params: {
     await flushSteps(params.jobId, steps);
     await prisma.learningJob.updateMany({
       where: { id: params.jobId },
-      data: { status: "FAILED", finishedAt: new Date(), lastError: msg, steps: steps as any },
+      data: { status: "FAILED", finishedAt: new Date(), lastError: msg, steps },
     });
   }
 }
-

@@ -1,13 +1,14 @@
 import { prisma } from "@/lib/prisma";
-import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters";
 import { OpenAIEmbeddings } from "@langchain/openai";
 import pgvector from "pgvector";
+import { buildStructuredChunks } from "@/lib/rag-chunking";
+import { rewriteQueryForRag } from "@/lib/rag-query-rewriter";
 
 /** 火山方舟多模态向量：完整 URL，例如 …/api/v3/embeddings/multimodal（与对话的 AI_API_BASE_URL 不同） */
 const ENV_EMBEDDING_URL = "AI_API_EMBEDDING_URL";
 
 /** 未配置 AI_EMBEDDING_DIMENSION 且模型名无法识别时的兜底（OpenAI text-embedding-3-small 等） */
-const DEFAULT_EMBEDDING_DIM = 1536;
+const DEFAULT_EMBEDDING_DIM = 1024;
 
 /**
  * 火山 doubao-embedding-vision-251215（Seed1.6-Embedding-1215）默认 **2048** 维；
@@ -17,6 +18,10 @@ const DOUBAO_EMBEDDING_VISION_251215_DIM = 2048;
 
 /** pgvector：HNSW / IVFFlat 等近似索引对单列维度有上限（当前扩展一般为 2000），超过则只能顺序扫描做 `<=>` */
 const PGVECTOR_ANN_MAX_DIM = 2000;
+const RAG_RRF_K = 60;
+const RAG_MIN_CANDIDATE_LIMIT = 12;
+const RAG_MAX_CANDIDATE_LIMIT = 24;
+const RAG_TRIGRAM_THRESHOLD = 0.08;
 
 function inferDefaultEmbeddingDimFromModel(): number {
   const name = `${process.env.AI_MODEL_EMBEDDING ?? ""} ${process.env.AI_MODEL_SEARCH ?? ""}`.toLowerCase();
@@ -55,6 +60,10 @@ export type RagHit = {
   distance: number;
   /** 笔记标题或附件显示名 */
   noteTitle?: string | null;
+};
+
+type RankedRagHit = RagHit & {
+  fusedScore?: number;
 };
 
 function getEmbeddingModelName(): string {
@@ -239,10 +248,22 @@ function htmlToStructuredText(html: string): string {
   return html
     .replace(/<script[\s\S]*?<\/script>/gi, " ")
     .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    // 代码块：<pre><code> → markdown code fence
+    .replace(/<pre[^>]*><code[^>]*>([\s\S]*?)<\/code><\/pre>/gi, "\n\n```\n$1\n```\n\n")
+    .replace(/<code>([\s\S]*?)<\/code>/gi, "`$1`")
+    // 标题
     .replace(/<h1[^>]*>([\s\S]*?)<\/h1>/gi, "\n\n# $1\n\n")
     .replace(/<h2[^>]*>([\s\S]*?)<\/h2>/gi, "\n\n## $1\n\n")
     .replace(/<h3[^>]*>([\s\S]*?)<\/h3>/gi, "\n\n### $1\n\n")
     .replace(/<h4[^>]*>([\s\S]*?)<\/h4>/gi, "\n\n#### $1\n\n")
+    // 表格：<table> → markdown table（保留结构以便后续分块识别）
+    .replace(/<table[^>]*>/gi, "\n\n")
+    .replace(/<\/table>/gi, "\n")
+    .replace(/<tr[^>]*>/gi, "| ")
+    .replace(/<\/tr>/gi, " |\n")
+    .replace(/<t[hd][^>]*>/gi, "| ")
+    .replace(/<\/t[hd]>/gi, " ")
+    // 列表
     .replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, "\n- $1")
     .replace(/<\/p>|<br\s*\/?>|<\/blockquote>/gi, "\n")
     .replace(/<[^>]+>/g, " ")
@@ -257,14 +278,6 @@ function htmlToStructuredText(html: string): string {
     .trim();
 }
 
-function withChunkContext(title: string, content: string): string {
-  const heading = [...content.matchAll(/^#{1,4}\s+(.+)$/gm)].at(-1)?.[1]?.trim();
-  return [`标题：${title}`, heading ? `所在小节：${heading}` : null, "", content]
-    .filter((x): x is string => typeof x === "string")
-    .join("\n")
-    .trim();
-}
-
 function keywordPattern(query: string): string | null {
   const terms = Array.from(new Set(query.match(/[\p{L}\p{N}_-]{2,}/gu) ?? []))
     .filter((x) => !/^\d+$/.test(x))
@@ -275,17 +288,56 @@ function keywordPattern(query: string): string | null {
   return `%${best.replace(/[\\%_]/g, (m) => `\\${m}`)}%`;
 }
 
-function mergeRagHits(primary: RagHit[], fallback: RagHit[], topK: number): RagHit[] {
-  const out: RagHit[] = [];
-  const seen = new Set<string>();
-  for (const hit of [...primary, ...fallback]) {
-    const key = hit.chunkId || `${hit.noteId ?? ""}:${hit.sourceId ?? ""}:${hit.chunkIndex}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(hit);
-    if (out.length >= topK) break;
-  }
-  return out;
+function hitKey(hit: Pick<RagHit, "chunkId" | "noteId" | "sourceId" | "chunkIndex">): string {
+  return hit.chunkId || `${hit.noteId ?? ""}:${hit.sourceId ?? ""}:${hit.chunkIndex}`;
+}
+
+function candidateLimit(topK: number): number {
+  return Math.max(RAG_MIN_CANDIDATE_LIMIT, Math.min(RAG_MAX_CANDIDATE_LIMIT, topK * 4));
+}
+
+function reciprocalRankFuseHits(vectorHits: RagHit[], lexicalHits: RagHit[], topK: number): RagHit[] {
+  const merged = new Map<string, RankedRagHit>();
+
+  const applyRank = (hits: RagHit[]) => {
+    for (let i = 0; i < hits.length; i += 1) {
+      const hit = hits[i]!;
+      const key = hitKey(hit);
+      const rankScore = 1 / (RAG_RRF_K + i + 1);
+      const existing = merged.get(key);
+      if (!existing) {
+        merged.set(key, { ...hit, fusedScore: rankScore });
+        continue;
+      }
+      existing.fusedScore = (existing.fusedScore ?? 0) + rankScore;
+      if (hit.distance < existing.distance) {
+        existing.distance = hit.distance;
+      }
+      if (!existing.noteTitle && hit.noteTitle) {
+        existing.noteTitle = hit.noteTitle;
+      }
+    }
+  };
+
+  applyRank(vectorHits);
+  applyRank(lexicalHits);
+
+  return Array.from(merged.values())
+    .sort((a, b) => {
+      const byScore = (b.fusedScore ?? 0) - (a.fusedScore ?? 0);
+      if (byScore !== 0) return byScore;
+      return a.distance - b.distance;
+    })
+    .slice(0, topK)
+    .map((ranked) => ({
+      noteId: ranked.noteId,
+      sourceId: ranked.sourceId,
+      chunkId: ranked.chunkId,
+      chunkIndex: ranked.chunkIndex,
+      content: ranked.content,
+      distance: ranked.distance,
+      noteTitle: ranked.noteTitle,
+    }));
 }
 
 let ragSchemaPromise: Promise<void> | null = null;
@@ -299,12 +351,36 @@ export async function ensureRagSchema(): Promise<void> {
   return ragSchemaPromise;
 }
 
+export async function validateRagSchema(dim = getExpectedEmbeddingDim()): Promise<void> {
+  const rows = await prisma.$queryRawUnsafe<Array<{ table_name: string; embedding_type: string }>>(`
+    SELECT c.table_name, format_type(a.atttypid, a.atttypmod) AS embedding_type
+    FROM information_schema.columns c
+    JOIN pg_class t ON t.relname = c.table_name
+    JOIN pg_namespace n ON n.oid = t.relnamespace AND n.nspname = c.table_schema
+    JOIN pg_attribute a ON a.attrelid = t.oid AND a.attname = c.column_name
+    WHERE c.table_schema = 'public'
+      AND c.column_name = 'embedding'
+      AND c.table_name IN ('note_chunks', 'source_embedding_chunks')
+  `);
+  const expected = `vector(${dim})`;
+  const validTables = new Set(rows.filter((row) => row.embedding_type === expected).map((row) => row.table_name));
+  if (!validTables.has("note_chunks") || !validTables.has("source_embedding_chunks")) {
+    throw new Error(`RAG 数据库结构未就绪：需要两张 ${expected} 向量表，请先执行 npm run db:deploy`);
+  }
+}
+
 async function runEnsureRagSchema(): Promise<void> {
   const dim = getExpectedEmbeddingDim();
   if (!Number.isInteger(dim)) {
     throw new Error("AI_EMBEDDING_DIMENSION 必须为整数");
   }
+  const allowRuntimeMigration = process.env.NODE_ENV !== "production" || process.env.RAG_SCHEMA_AUTO_MIGRATE === "true";
+  if (!allowRuntimeMigration) {
+    await validateRagSchema(dim);
+    return;
+  }
   await prisma.$executeRawUnsafe(`CREATE EXTENSION IF NOT EXISTS vector;`);
+  await prisma.$executeRawUnsafe(`CREATE EXTENSION IF NOT EXISTS pg_trgm;`);
 
   await prisma.$executeRawUnsafe(`
     CREATE TABLE IF NOT EXISTS note_chunks (
@@ -325,6 +401,20 @@ async function runEnsureRagSchema(): Promise<void> {
   await prisma.$executeRawUnsafe(`
     CREATE INDEX IF NOT EXISTS note_chunks_note_id_idx ON note_chunks (note_id);
   `);
+  await prisma.$executeRawUnsafe(`
+    ALTER TABLE note_chunks
+    ADD COLUMN IF NOT EXISTS search_vector tsvector;
+  `);
+  await prisma.$executeRawUnsafe(`
+    ALTER TABLE note_chunks
+    ADD COLUMN IF NOT EXISTS search_text TEXT;
+  `);
+  await prisma.$executeRawUnsafe(`
+    CREATE INDEX IF NOT EXISTS note_chunks_search_vector_idx ON note_chunks USING GIN (search_vector);
+  `);
+  await prisma.$executeRawUnsafe(`
+    CREATE INDEX IF NOT EXISTS note_chunks_content_trgm_idx ON note_chunks USING GIN (content gin_trgm_ops);
+  `);
 
   await prisma.$executeRawUnsafe(`
     CREATE TABLE IF NOT EXISTS source_embedding_chunks (
@@ -344,6 +434,20 @@ async function runEnsureRagSchema(): Promise<void> {
 
   await prisma.$executeRawUnsafe(`
     CREATE INDEX IF NOT EXISTS source_embedding_chunks_source_id_idx ON source_embedding_chunks (source_id);
+  `);
+  await prisma.$executeRawUnsafe(`
+    ALTER TABLE source_embedding_chunks
+    ADD COLUMN IF NOT EXISTS search_vector tsvector;
+  `);
+  await prisma.$executeRawUnsafe(`
+    ALTER TABLE source_embedding_chunks
+    ADD COLUMN IF NOT EXISTS search_text TEXT;
+  `);
+  await prisma.$executeRawUnsafe(`
+    CREATE INDEX IF NOT EXISTS source_embedding_chunks_search_vector_idx ON source_embedding_chunks USING GIN (search_vector);
+  `);
+  await prisma.$executeRawUnsafe(`
+    CREATE INDEX IF NOT EXISTS source_embedding_chunks_content_trgm_idx ON source_embedding_chunks USING GIN (content gin_trgm_ops);
   `);
 
   await prisma.$executeRawUnsafe(`DROP INDEX IF EXISTS note_chunks_embedding_hnsw_idx`);
@@ -499,17 +603,12 @@ export async function indexNoteForRag(params: {
   await prisma.$executeRawUnsafe(`DELETE FROM note_chunks WHERE user_id = $1 AND note_id = $2`, params.userId, params.noteId);
 
   const textBase = htmlToStructuredText(params.content);
-  const fullText = `${params.title}\n\n${textBase}`.trim();
-
-  const splitter = new RecursiveCharacterTextSplitter({
-    chunkSize: 700,
-    chunkOverlap: 120,
+  const structuredChunks = await buildStructuredChunks({
+    title: params.title,
+    text: textBase,
+    sourceKind: "note",
   });
-  const docs = await splitter.createDocuments([fullText]);
-  const chunks = docs
-    .map((d) => withChunkContext(params.title, d.pageContent.trim()))
-    .filter(Boolean)
-    .slice(0, 60);
+  const chunks = structuredChunks.map((chunk) => chunk.content);
 
   if (!chunks.length) return { chunks: 0 };
 
@@ -519,6 +618,7 @@ export async function indexNoteForRag(params: {
   for (let i = 0; i < chunks.length; i++) {
     const id = `${params.noteId}:${i}`;
     const embeddingSql = pgvector.toSql(vectors[i] as number[]);
+    const searchText = structuredChunks[i]?.searchText ?? "";
     await prisma.$executeRawUnsafe(
       `INSERT INTO note_chunks (id, user_id, note_id, chunk_index, content, embedding)
        VALUES ($1, $2, $3, $4, $5, $6::vector(${dim}))`,
@@ -529,6 +629,14 @@ export async function indexNoteForRag(params: {
       chunks[i],
       embeddingSql
     );
+    if (searchText) {
+      await prisma.$executeRawUnsafe(
+        `UPDATE note_chunks SET search_vector = to_tsvector('simple', $1), search_text = $2 WHERE id = $3`,
+        searchText,
+        searchText,
+        id
+      );
+    }
   }
 
   return { chunks: chunks.length };
@@ -544,6 +652,8 @@ export async function indexKnowledgeSourceForRag(params: {
   sourceId: string;
   title: string;
   chunks: string[];
+  /** 与 chunks 一一对应的分词文本（可选），用于 search_vector */
+  searchTexts?: string[];
 }): Promise<{ chunks: number }> {
   await ensureRagSchema();
   await prisma.$executeRawUnsafe(`DELETE FROM source_embedding_chunks WHERE source_id = $1`, params.sourceId);
@@ -567,9 +677,176 @@ export async function indexKnowledgeSourceForRag(params: {
       chunks[i],
       embeddingSql
     );
+    const searchText = params.searchTexts?.[i]?.trim();
+    if (searchText) {
+      await prisma.$executeRawUnsafe(
+        `UPDATE source_embedding_chunks SET search_vector = to_tsvector('simple', $1), search_text = $2 WHERE id = $3`,
+        searchText,
+        searchText,
+        id
+      );
+    }
   }
 
   return { chunks: chunks.length };
+}
+
+function normalizeTokens(query: string): string[] {
+  const terms = Array.from(new Set(query.match(/[\p{L}\p{N}_-]{2,}/gu) ?? []))
+    .map((x) => x.trim())
+    .filter((x) => x.length >= 2)
+    .filter((x) => !/^\d+$/.test(x));
+  return terms.slice(0, 5);
+}
+
+async function fetchLexicalHits(params: {
+  userId: string;
+  query: string;
+  topK: number;
+  noteId?: string;
+  conversationId?: string;
+}): Promise<RagHit[]> {
+  const tokens = normalizeTokens(params.query);
+  const tsQuery = tokens.join(" ");
+  const pattern = keywordPattern(params.query);
+  const trigramProbe = tokens.join(" ");
+  const topK = Math.max(1, Math.min(params.topK, candidateLimit(params.topK)));
+
+  if (!tsQuery && !pattern && !trigramProbe) return [];
+
+  const noteId = params.noteId?.trim();
+  const conversationId = params.conversationId?.trim();
+  const lexicalWhere = `
+    (
+      nc.search_vector @@ websearch_to_tsquery('simple', $2)
+      OR nc.content ILIKE $3 ESCAPE '\\'
+      OR similarity(nc.content, $4) >= ${RAG_TRIGRAM_THRESHOLD}
+    )
+  `;
+  const sourceLexicalWhere = lexicalWhere.replaceAll("nc.", "sec.");
+  const lexicalTsQuery = tsQuery || params.query;
+  const lexicalPattern = pattern || `%${params.query.replace(/[\\%_]/g, (m) => `\\${m}`)}%`;
+  const lexicalProbe = trigramProbe || params.query;
+
+  if (conversationId && !noteId) {
+    return ((await prisma.$queryRawUnsafe(
+      `
+      SELECT *
+      FROM (
+        SELECT
+          nc.note_id::text AS "noteId",
+          NULL::text AS "sourceId",
+          nc.id AS "chunkId",
+          nc.chunk_index AS "chunkIndex",
+          nc.content AS "content",
+          CASE
+            WHEN nc.search_vector @@ websearch_to_tsquery('simple', $2) THEN 0.15
+            WHEN similarity(nc.content, $4) >= ${RAG_TRIGRAM_THRESHOLD} THEN 0.35
+            ELSE 0.65
+          END AS "distance",
+          n.title AS "noteTitle",
+          ts_rank_cd(nc.search_vector, websearch_to_tsquery('simple', $2)) AS "tsRank"
+        FROM note_chunks nc
+        JOIN "Note" n ON n.id = nc.note_id
+        WHERE nc.user_id = $1
+          AND n.archived = false
+          AND ${lexicalWhere}
+        UNION ALL
+        SELECT
+          NULL::text AS "noteId",
+          sec.source_id::text AS "sourceId",
+          sec.id AS "chunkId",
+          sec.chunk_index AS "chunkIndex",
+          sec.content AS "content",
+          CASE
+            WHEN sec.search_vector @@ websearch_to_tsquery('simple', $2) THEN 0.15
+            WHEN similarity(sec.content, $4) >= ${RAG_TRIGRAM_THRESHOLD} THEN 0.35
+            ELSE 0.65
+          END AS "distance",
+          ks.title AS "noteTitle",
+          ts_rank_cd(sec.search_vector, websearch_to_tsquery('simple', $2)) AS "tsRank"
+        FROM source_embedding_chunks sec
+        JOIN "KnowledgeSource" ks ON ks.id = sec.source_id
+        WHERE sec.user_id = $1
+          AND ks."userId" = $1
+          AND ks."conversationId" = $5
+          AND ${sourceLexicalWhere}
+      ) ranked
+      ORDER BY ranked."tsRank" DESC NULLS LAST, ranked."distance" ASC, ranked."chunkIndex" ASC
+      LIMIT $6
+    `,
+      params.userId,
+      lexicalTsQuery,
+      lexicalPattern,
+      lexicalProbe,
+      conversationId,
+      topK
+    )) as RagHit[]) ?? [];
+  }
+
+  if (noteId) {
+    return ((await prisma.$queryRawUnsafe(
+      `
+      SELECT
+        nc.note_id as "noteId",
+        NULL::text as "sourceId",
+        nc.id as "chunkId",
+        nc.chunk_index as "chunkIndex",
+        nc.content as "content",
+        CASE
+          WHEN nc.search_vector @@ websearch_to_tsquery('simple', $2) THEN 0.15
+          WHEN similarity(nc.content, $4) >= ${RAG_TRIGRAM_THRESHOLD} THEN 0.35
+          ELSE 0.65
+        END as "distance",
+        n.title as "noteTitle",
+        ts_rank_cd(nc.search_vector, websearch_to_tsquery('simple', $2)) as "tsRank"
+      FROM note_chunks nc
+      JOIN "Note" n ON n.id = nc.note_id
+      WHERE nc.user_id = $1
+        AND n.archived = false
+        AND nc.note_id = $5
+        AND ${lexicalWhere}
+      ORDER BY "tsRank" DESC NULLS LAST, nc.chunk_index ASC
+      LIMIT $6
+    `,
+      params.userId,
+      lexicalTsQuery,
+      lexicalPattern,
+      lexicalProbe,
+      noteId,
+      topK
+    )) as RagHit[]) ?? [];
+  }
+
+  return ((await prisma.$queryRawUnsafe(
+    `
+      SELECT
+        nc.note_id as "noteId",
+        NULL::text as "sourceId",
+        nc.id as "chunkId",
+        nc.chunk_index as "chunkIndex",
+        nc.content as "content",
+        CASE
+          WHEN nc.search_vector @@ websearch_to_tsquery('simple', $2) THEN 0.15
+          WHEN similarity(nc.content, $4) >= ${RAG_TRIGRAM_THRESHOLD} THEN 0.35
+          ELSE 0.65
+        END as "distance",
+        n.title as "noteTitle",
+        ts_rank_cd(nc.search_vector, websearch_to_tsquery('simple', $2)) as "tsRank"
+      FROM note_chunks nc
+      JOIN "Note" n ON n.id = nc.note_id
+      WHERE nc.user_id = $1
+        AND n.archived = false
+        AND ${lexicalWhere}
+      ORDER BY "tsRank" DESC NULLS LAST, nc.chunk_index ASC
+      LIMIT $5
+    `,
+    params.userId,
+    lexicalTsQuery,
+    lexicalPattern,
+    lexicalProbe,
+    topK
+  )) as RagHit[]) ?? [];
 }
 
 export async function ragSearch(params: {
@@ -586,16 +863,23 @@ export async function ragSearch(params: {
   const q = params.query.trim();
   if (!q) return [];
 
+  // Query Rewriting：提取关键词用于 lexical 检索，原始 query 仍用于 vector 检索
+  const { keywords: lexicalQuery } = await rewriteQueryForRag(q).catch(() => ({
+    keywords: q,
+    subQueries: [] as string[],
+  }));
+
   const qVec = await embedQueryUnified(q);
   const qSql = pgvector.toSql(qVec as number[]);
   const topK = Math.max(1, Math.min(10, params.topK ?? 3));
   const dim = getExpectedEmbeddingDim();
+  const candidateK = candidateLimit(topK);
 
   const noteId = params.noteId?.trim();
   const conversationId = params.conversationId?.trim();
-
+  let vectorRows: RagHit[] = [];
   if (conversationId && !noteId) {
-    const rows = (await prisma.$queryRawUnsafe(
+    vectorRows = ((await prisma.$queryRawUnsafe(
       `
       WITH combined AS (
         SELECT
@@ -605,8 +889,7 @@ export async function ragSearch(params: {
           nc.chunk_index AS "chunkIndex",
           nc.content AS "content",
           (nc.embedding <=> ($1::vector(${dim}))) AS "distance",
-          n.title AS "noteTitle",
-          'note'::text AS "kind"
+          n.title AS "noteTitle"
         FROM note_chunks nc
         JOIN "Note" n ON n.id = nc.note_id
         WHERE nc.user_id = $2 AND n.archived = false
@@ -618,8 +901,7 @@ export async function ragSearch(params: {
           sec.chunk_index,
           sec.content,
           (sec.embedding <=> ($1::vector(${dim}))),
-          ks.title,
-          'src'::text
+          ks.title
         FROM source_embedding_chunks sec
         JOIN "KnowledgeSource" ks ON ks.id = sec.source_id
         WHERE sec.user_id = $2 AND ks."userId" = $2 AND ks."conversationId" = $4
@@ -631,15 +913,12 @@ export async function ragSearch(params: {
     `,
       qSql,
       params.userId,
-      topK,
+      candidateK,
       conversationId
-    )) as RagHit[];
-    return rows ?? [];
-  }
-
-  const rows = noteId
-    ? ((await prisma.$queryRawUnsafe(
-        `
+    )) as RagHit[]) ?? [];
+  } else if (noteId) {
+    vectorRows = ((await prisma.$queryRawUnsafe(
+      `
       SELECT
         nc.note_id as "noteId",
         NULL::text as "sourceId",
@@ -654,13 +933,14 @@ export async function ragSearch(params: {
       ORDER BY nc.embedding <=> ($1::vector(${dim}))
       LIMIT $3
     `,
-        qSql,
-        params.userId,
-        topK,
-        noteId
-      )) as RagHit[])
-    : ((await prisma.$queryRawUnsafe(
-        `
+      qSql,
+      params.userId,
+      candidateK,
+      noteId
+    )) as RagHit[]) ?? [];
+  } else {
+    vectorRows = ((await prisma.$queryRawUnsafe(
+      `
       SELECT
         nc.note_id as "noteId",
         NULL::text as "sourceId",
@@ -675,63 +955,24 @@ export async function ragSearch(params: {
       ORDER BY nc.embedding <=> ($1::vector(${dim}))
       LIMIT $3
     `,
-        qSql,
-        params.userId,
-        topK
-      )) as RagHit[]);
+      qSql,
+      params.userId,
+      candidateK
+    )) as RagHit[]) ?? [];
+  }
 
-  const vectorRows = rows ?? [];
-  const pattern = keywordPattern(q);
-  if (!pattern || vectorRows.length >= topK) return vectorRows;
+  const lexicalRows = await fetchLexicalHits({
+    userId: params.userId,
+    query: lexicalQuery || q,
+    topK: candidateK,
+    noteId,
+    conversationId,
+  });
 
-  const lexicalRows = noteId
-    ? ((await prisma.$queryRawUnsafe(
-        `
-      SELECT
-        nc.note_id as "noteId",
-        NULL::text as "sourceId",
-        nc.id as "chunkId",
-        nc.chunk_index as "chunkIndex",
-        nc.content as "content",
-        0.98::float as "distance",
-        n.title as "noteTitle"
-      FROM note_chunks nc
-      JOIN "Note" n ON n.id = nc.note_id
-      WHERE nc.user_id = $1
-        AND n.archived = false
-        AND nc.note_id = $3
-        AND (n.title ILIKE $2 ESCAPE '\\' OR nc.content ILIKE $2 ESCAPE '\\')
-      ORDER BY nc.chunk_index ASC
-      LIMIT $4
-    `,
-        params.userId,
-        pattern,
-        noteId,
-        topK
-      )) as RagHit[])
-    : ((await prisma.$queryRawUnsafe(
-        `
-      SELECT
-        nc.note_id as "noteId",
-        NULL::text as "sourceId",
-        nc.id as "chunkId",
-        nc.chunk_index as "chunkIndex",
-        nc.content as "content",
-        0.98::float as "distance",
-        n.title as "noteTitle"
-      FROM note_chunks nc
-      JOIN "Note" n ON n.id = nc.note_id
-      WHERE nc.user_id = $1
-        AND n.archived = false
-        AND (n.title ILIKE $2 ESCAPE '\\' OR nc.content ILIKE $2 ESCAPE '\\')
-      ORDER BY n."updatedAt" DESC, nc.chunk_index ASC
-      LIMIT $3
-    `,
-        params.userId,
-        pattern,
-        topK
-      )) as RagHit[]);
+  if (!vectorRows.length && !lexicalRows.length) return [];
+  if (!lexicalRows.length) return vectorRows.slice(0, topK);
+  if (!vectorRows.length) return lexicalRows.slice(0, topK);
 
-  return mergeRagHits(vectorRows, lexicalRows ?? [], topK);
+  return reciprocalRankFuseHits(vectorRows, lexicalRows, topK);
 }
 

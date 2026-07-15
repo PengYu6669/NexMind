@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAuthUser } from "@/lib/auth";
+import { conversationActionInputSchema, firstValidationMessage } from "@/lib/api-inputs";
 
 const NEXTCLAW_TITLES = ["NextClaw", "学伴"];
 
@@ -45,10 +46,8 @@ export async function POST(
   const { id } = await ctx.params;
   if (!id?.trim()) return NextResponse.json({ error: "缺少 id" }, { status: 400 });
 
-  const body = (await req.json().catch(() => ({}))) as { action?: string };
-  if (body.action !== "clearMessages") {
-    return NextResponse.json({ error: "不支持的操作" }, { status: 400 });
-  }
+  const parsed = conversationActionInputSchema.safeParse(await req.json().catch(() => ({})));
+  if (!parsed.success) return NextResponse.json({ error: firstValidationMessage(parsed.error) }, { status: 400 });
 
   const conv = await getOwnedConversation(user.id, id);
   if (!conv) return NextResponse.json({ error: "会话不存在" }, { status: 404 });

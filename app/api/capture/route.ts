@@ -4,6 +4,7 @@ import { getAuthUser } from "@/lib/auth";
 import { extractTextFromUrl, normalizeCaptureInput } from "@/lib/extractPage";
 import { generateCaptureChunkNote, generateCaptureResult } from "@/lib/doubao";
 import { enqueueLearningJob } from "@/lib/note-learning-enqueue";
+import { captureInputSchema, firstValidationMessage } from "@/lib/api-inputs";
 import { emitLearningJobEvent } from "@/lib/learning-job-events";
 import { indexNoteForRag } from "@/lib/rag";
 
@@ -478,10 +479,9 @@ export async function POST(req: Request) {
   const user = await getAuthUser();
   if (!user) return NextResponse.json({ error: "未登录" }, { status: 401 });
 
-  const body = (await req.json().catch(() => null)) as { input?: string; mode?: string } | null;
-  const input = body?.input?.trim();
-  if (!input) return NextResponse.json({ error: "缺少 input" }, { status: 400 });
-  const mode = body?.mode === "deep" ? "deep" : "lite";
+  const parsed = captureInputSchema.safeParse(await req.json().catch(() => ({})));
+  if (!parsed.success) return NextResponse.json({ error: firstValidationMessage(parsed.error) }, { status: 400 });
+  const { input, mode } = parsed.data;
   const wantsStream =
     (req.headers.get("accept") || "").includes("text/event-stream") || new URL(req.url).searchParams.get("stream") === "1";
 

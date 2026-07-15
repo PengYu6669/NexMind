@@ -33,7 +33,7 @@ export function AppTopBar({ center }: { center?: ReactNode }) {
   return (
     <>
       <CaptureModal open={captureOpen} onClose={() => setCaptureOpen(false)} />
-      <header className="fixed left-64 right-0 top-0 z-30 flex h-16 items-center justify-between gap-5 border-b border-black/10 bg-white/90 px-5 backdrop-blur-xl md:px-8">
+      <header className="fixed left-0 right-0 top-0 z-30 flex h-16 items-center justify-between gap-3 border-b border-black/10 bg-white/90 px-4 backdrop-blur-xl md:left-64 md:gap-5 md:px-8">
         <div className="min-w-0 flex-1">
           <p className="hidden text-[11px] font-semibold uppercase tracking-[0.16em] text-neutral-400 sm:block">
             Workspace

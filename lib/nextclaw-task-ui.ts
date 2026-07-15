@@ -55,6 +55,10 @@ export function buildTaskUiPayload(params: {
     headline = failed ? `失败：${failed.label}` : "失败";
     progress = total ? Math.min(0.9, done / Math.max(1, total)) : 0.2;
     currentStepLabel = failed?.label ?? null;
+  } else if (params.status === "WAITING_INPUT") {
+    headline = "等待你提供来源";
+    progress = total ? Math.min(0.9, done / Math.max(1, total)) : 0.2;
+    currentStepLabel = steps.at(-1)?.label ?? null;
   } else {
     headline = params.status;
     progress = 0;

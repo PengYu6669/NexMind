@@ -49,12 +49,12 @@ export default async function NotesLayout({ children }: { children: ReactNode })
   }));
 
   return (
-    <div className="min-h-screen bg-[#fbfbfa] font-body text-black">
+    <div className="min-h-screen bg-[#fbfbfa] pb-16 font-body text-black md:pb-0">
       <AppSidebar />
-      <div className="flex min-h-screen flex-col pl-64">
+      <div className="flex min-h-screen flex-col md:pl-64">
         <AppTopBar />
         <div className="flex min-h-0 flex-1 pt-16">
-          <div className="flex min-h-0 w-full max-w-sm shrink-0 flex-col self-stretch border-r border-black/10 bg-white lg:max-w-[320px]">
+          <div className="hidden min-h-0 w-full max-w-sm shrink-0 flex-col self-stretch border-r border-black/10 bg-white md:flex lg:max-w-[320px]">
             <NotesLibrarySidebar folders={folders} notes={list} className="min-h-0 flex-1 border-0" />
           </div>
           <div className="min-h-0 flex-1 bg-[#fbfbfa]">{children}</div>

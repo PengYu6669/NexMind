@@ -18,6 +18,7 @@ import { config } from "dotenv";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { assertSafePublicHttpUrl } from "../../lib/safe-public-url";
 
 const envFile = resolve(process.cwd(), ".env");
 if (existsSync(envFile)) {
@@ -184,22 +185,26 @@ server.registerTool(
             "User-Agent": "ima-claw-nextclaw-search/0.1.0",
           },
         });
-        const data = (await res.json().catch(() => null)) as any;
+        const data: unknown = await res.json().catch(() => null);
+        const dataObject = data && typeof data === "object" && !Array.isArray(data) ? data as Record<string, unknown> : {};
         if (!res.ok) return { ok: false as const, error: "SERPAPI_HTTP_ERROR", detail: { status: res.status, data } };
-        if (data?.error) {
-          const detail = String(data.error);
+        if (dataObject.error) {
+          const detail = String(dataObject.error);
           // 无结果属于“可降级”情况：返回 ok=true + 空 results，让上层跳过联网继续跑，而不是整条链路失败。
           if (/hasn't returned any results/i.test(detail)) {
-            return { ok: true as const, engine: engineName, results: [] as any[], warning: detail };
+            return { ok: true as const, engine: engineName, results: [], warning: detail };
           }
           return { ok: false as const, error: "SERPAPI_ERROR", detail };
         }
-        const results = (data?.organic_results ?? []) as any[];
-        const simplified = results.slice(0, k).map((r) => ({
-          title: String(r?.title ?? "").trim(),
-          url: String(r?.link ?? r?.url ?? "").trim(),
-          description: String(r?.snippet ?? r?.description ?? "").trim(),
-        }));
+        const results = Array.isArray(dataObject.organic_results) ? dataObject.organic_results : [];
+        const simplified = results.slice(0, k).map((value) => {
+          const r = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+          return {
+            title: String(r.title ?? "").trim(),
+            url: String(r.link ?? r.url ?? "").trim(),
+            description: String(r.snippet ?? r.description ?? "").trim(),
+          };
+        });
         return { ok: true as const, engine: engineName, results: simplified };
       };
 
@@ -211,7 +216,7 @@ server.registerTool(
           content: [{ type: "text" as const, text: JSON.stringify({ ok: false, error: found.error, detail: found.detail }) }],
         };
       }
-      const warning = (found as any).warning;
+      const warning = "warning" in found ? found.warning : undefined;
       return {
         content: [
           {
@@ -245,7 +250,7 @@ server.registerTool(
   },
   async ({ url, timeoutMs, maxChars }) => {
     try {
-      const target = normalizeUrl(url);
+      const target = (await assertSafePublicHttpUrl(normalizeUrl(url))).toString();
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), timeoutMs ?? 20000);
       try {

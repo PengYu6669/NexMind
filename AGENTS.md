@@ -1,58 +1,79 @@
-# AGENTS.md（团队/多 Agent 协作约定）
+# AGENTS.md
 
-在 AI 项目里，`AGENTS.md` 通常用来做两件事：
+## Scope And Ownership
 
-1) **把“怎么干活”写清楚**：不同角色（Planner/Coach/Auditor/Tooling/UI/DB）分工、输入输出约定、常见踩坑与回退策略。  
-2) **作为多 Agent 协作的单一事实来源**：当你用 Cursor/Claude/其他 Agent 并行改仓库时，它能降低“每个 Agent 自己发挥导致架构发散”的风险。
+- The main agent handles work by default. Create sub-agents only when explicitly requested or when independent cross-module review materially reduces risk.
+- Search from the user entry, route, configuration, or changed file and follow the actual call chain.
+- Preserve unrelated worktree changes. Do not mix unrelated refactors into a feature change.
+- Prefer updating an existing durable document over creating status reports, comparison files, or implementation diaries.
 
-> 本仓库的“项目入口说明”放在 `CLAUDE.md`；这里更偏“协作方式/改动约束/验收标准”。
+## Non-Negotiable Contracts
 
----
+### API
 
-## 角色分工（建议）
+- API request bodies use Zod schemas from `lib/api-inputs.ts` or an equally explicit local schema.
+- Response-shape changes require synchronized frontend type/rendering updates.
+- Every user-owned read/write includes `userId` ownership filtering.
+- Do not expose secrets, internal stack traces, or raw provider payloads in production responses.
 
-- **App/UI Agent**
-  - 负责页面与组件：`components/**`、`app/**`（除 DB/migration）
-  - 目标：UX 清晰、信息分层（先可用，再可展开）
-- **Workflow Agent（NextClaw / LangGraph）**
-  - 负责：`lib/nextclaw-langgraph.ts`、`lib/nextclaw-*.ts`
-  - 目标：steps 可追踪、可恢复、可降级（MCP/联网失败不把任务炸掉）
-- **RAG/Data Agent**
-  - 负责：`lib/rag.ts`、召回策略、embedding 参数、索引/分块
-  - 目标：可解释、可测、避免“无证据胡写”
-- **DB Agent（Prisma）**
-  - 负责：`prisma/schema.prisma` + migrations
-  - 目标：迁移可回滚（至少不破坏已有数据），字段变更同步 API/前端类型
-- **Tools Agent（MCP / 搜索 / Web reader）**
-  - 负责：`mcp-servers/**`、`lib/nextclaw-mcp-client.ts`
-  - 目标：stdio 规范（stdout 不写日志）、错误可诊断（stderr），主应用有回退路径
+### Database
 
----
+- Every Prisma schema change requires a migration.
+- Production applies `prisma migrate deploy`; never use `db push`, `migrate reset`, or `--accept-data-loss` in build/deploy paths.
+- Verify the complete migration history against an empty PostgreSQL database.
+- Raw RAG tables are intentionally outside Prisma models; do not accept generated diffs that drop `note_chunks` or `source_embedding_chunks`.
 
-## 产物/契约（必须遵守）
+### Learning Jobs And LangGraph
 
-- **API response shape**：改 `app/api/**` 的返回字段时，必须同步更新对应前端的类型/渲染。
-- **`steps` 记录**：写入 `steps` 的内容必须是可序列化 JSON，避免塞函数/类实例。
-- **可选能力必须可降级**：MCP/联网/对象存储/OCR 任何一个不可用时，主流程应尽量提供可用的回退（并在 UI/steps 里给出提示）。
-- **环境变量新增规则**：新增任何 `process.env.*` 必须同步 `.env.example` 与 `README.md`（“需要申请哪些 API Key”那一节）。
+- Job claim remains atomic (`FOR UPDATE SKIP LOCKED`).
+- `PENDING`, `RUNNING`, `SUCCEEDED`, `FAILED`, `CANCELLED`, `WAITING_INPUT`, and `SKIPPED` have distinct semantics.
+- HITL waiting uses `WAITING_INPUT`; user cancellation uses `CANCELLED`.
+- `steps`, plans, tool inputs, checkpoint state, and event payloads must be serializable JSON.
+- Conditional-edge behavior belongs in `lib/nextclaw-routing.ts` and requires tests.
+- Optional MCP, search, web read, audit, OCR, and object storage capabilities must have a usable fallback or an explicit degraded state.
+- Never fetch a user-provided URL without `assertSafePublicHttpUrl` at both API and tool boundaries.
 
----
+### RAG
 
-## 修改流程（给 Agent 的工作方式）
+- Embedding dimension must match migrations, inserts, queries, and indexes.
+- Production request paths validate RAG schema; they do not silently mutate it unless explicitly enabled for an emergency.
+- Retrieval changes require focused tests or evaluation evidence; do not claim quality improvements from implementation alone.
 
-当你要改一个功能，请按这个顺序工作（避免返工）：
+### Frontend
 
-1) **先定位入口文件**（见 `CLAUDE.md` 的“从哪里开始读”）
-2) **明确“用户可见行为”** 与 **数据契约**（API/DB/steps）
-3) **最小改动闭环**：保证功能可用再优化体验
-4) **检查 lint**：至少对改动文件跑 lint（或全量 `npm run lint`）
+- Keep desktop navigation and mobile bottom navigation usable.
+- New fixed-width surfaces require responsive constraints and overflow handling.
+- Test at least one desktop and one mobile viewport for layout changes.
+- Do not introduce a new UI framework for a local component change.
 
----
+## Change Workflow
 
-## 验收标准（建议写进 PR 描述）
+1. Locate the user-visible entry and backend/domain call chain.
+2. State the behavior and data contract before editing.
+3. Make the smallest complete change across UI, API, domain, and persistence boundaries.
+4. Add tests proportional to failure impact.
+5. Run the complete gate before handoff.
 
-每个 PR 至少包含：
+## Required Gate
 
-- **Summary**：1-3 条说明“改了什么/为什么”
-- **Test plan（手动）**：列出 3-5 步可复现验证（例如 `/learn`：选择复习条目→提交 AI 评分→插入缺失要点→下一条）
-- **风险与降级**：外部依赖缺失时的表现（例如 `SERPAPI_API_KEY` 未配置、`NEXTCLAW_MCP_ENABLED=false`）
+```bash
+npm run lint
+npm run typecheck
+npm run test
+npm run test:core
+npm run build
+```
+
+For database changes, additionally apply every migration to a fresh database. For UI changes, inspect desktop and mobile rendering.
+
+## Handoff
+
+Summaries should cover no more than five high-value points:
+
+- user entry
+- core data flow
+- key files
+- primary failure/degradation path
+- important design choice
+
+Do not generate duplicate weekly reports, before/after documents, or completion checklists unless the user explicitly requests them.

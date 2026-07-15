@@ -2,10 +2,9 @@ import { NextResponse } from "next/server";
 import { getAuthUser } from "@/lib/auth";
 import { callDashscopeChatCompletion } from "@/lib/doubao";
 import { prisma } from "@/lib/prisma";
+import { firstValidationMessage, noteAiInputSchema } from "@/lib/api-inputs";
 
 export type NoteAiAction = "summary" | "expand" | "polish" | "outline" | "qa" | "actions";
-
-const ACTIONS = new Set<string>(["summary", "expand", "polish", "outline", "qa", "actions"]);
 
 const SYSTEM: Record<NoteAiAction, string> = {
   summary:
@@ -29,15 +28,9 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   const { id } = await ctx.params;
   if (!id?.trim()) return NextResponse.json({ error: "缺少 id" }, { status: 400 });
 
-  const body = (await req.json()) as {
-    action?: string;
-    plainText?: string;
-  };
-
-  const action = body.action?.trim() as NoteAiAction;
-  if (!action || !ACTIONS.has(action)) {
-    return NextResponse.json({ error: "无效的操作" }, { status: 400 });
-  }
+  const parsed = noteAiInputSchema.safeParse(await req.json().catch(() => ({})));
+  if (!parsed.success) return NextResponse.json({ error: firstValidationMessage(parsed.error) }, { status: 400 });
+  const { action, plainText: plain } = parsed.data;
 
   const note = await prisma.note.findFirst({
     where: { id, userId: user.id, archived: false },
@@ -45,10 +38,6 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   });
   if (!note) return NextResponse.json({ error: "笔记不存在" }, { status: 404 });
 
-  const plain = (typeof body.plainText === "string" ? body.plainText : "").trim().slice(0, 12000);
-  if (!plain) {
-    return NextResponse.json({ error: "没有可处理的正文，请先输入内容或选中一段文字" }, { status: 400 });
-  }
 
   const model = process.env.AI_MODEL_CHAT || "Doubao-Seed-2.0-lite";
   const userContent = `笔记标题：${note.title}\n\n---\n\n${plain}`;

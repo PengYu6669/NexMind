@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
 import { getAuthUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-
-type LinkBody = { fromNoteId?: string; toNoteId?: string };
+import { firstValidationMessage, noteLinkInputSchema } from "@/lib/api-inputs";
 
 async function assertNotesOwnedAndActive(
   userId: string,
@@ -33,12 +32,9 @@ export async function POST(req: Request) {
   const user = await getAuthUser();
   if (!user) return NextResponse.json({ error: "未登录" }, { status: 401 });
 
-  const body = (await req.json()) as LinkBody;
-  const fromNoteId = body.fromNoteId?.trim();
-  const toNoteId = body.toNoteId?.trim();
-  if (!fromNoteId || !toNoteId) {
-    return NextResponse.json({ error: "需要 fromNoteId 与 toNoteId" }, { status: 400 });
-  }
+  const parsed = noteLinkInputSchema.safeParse(await req.json().catch(() => ({})));
+  if (!parsed.success) return NextResponse.json({ error: firstValidationMessage(parsed.error) }, { status: 400 });
+  const { fromNoteId, toNoteId } = parsed.data;
 
   const check = await assertNotesOwnedAndActive(user.id, fromNoteId, toNoteId);
   if ("error" in check) {
@@ -74,9 +70,10 @@ export async function DELETE(req: Request) {
 
   const contentType = req.headers.get("content-type") ?? "";
   if (contentType.includes("application/json")) {
-    const body = (await req.json()) as LinkBody;
-    fromNoteId = body.fromNoteId?.trim();
-    toNoteId = body.toNoteId?.trim();
+    const parsed = noteLinkInputSchema.safeParse(await req.json().catch(() => ({})));
+    if (!parsed.success) return NextResponse.json({ error: firstValidationMessage(parsed.error) }, { status: 400 });
+    fromNoteId = parsed.data.fromNoteId;
+    toNoteId = parsed.data.toNoteId;
   } else {
     const url = new URL(req.url);
     fromNoteId = url.searchParams.get("from")?.trim() ?? undefined;

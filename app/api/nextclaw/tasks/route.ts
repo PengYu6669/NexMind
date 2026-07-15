@@ -5,6 +5,7 @@ import { enqueueErrorResponse, runLearningEnqueue } from "@/lib/note-learning-en
 import { buildTaskUiPayload } from "@/lib/nextclaw-task-ui";
 import { findLearningJobsForTaskDesk } from "@/lib/nextclaw-tasks-query";
 import { scheduleLearningJobsProcessing } from "@/lib/learning-jobs-kickoff";
+import { firstValidationMessage, tasksEnqueueInputSchema } from "@/lib/api-inputs";
 
 export async function GET() {
   const user = await getAuthUser();
@@ -78,14 +79,9 @@ export async function POST(req: Request) {
   const user = await getAuthUser();
   if (!user) return NextResponse.json({ error: "未登录" }, { status: 401 });
 
-  const body = (await req.json().catch(() => ({}))) as {
-    noteId?: string;
-    mode?: "lite" | "deep";
-  };
-  const noteId = body.noteId?.trim();
-  if (!noteId) return NextResponse.json({ error: "缺少 noteId" }, { status: 400 });
-
-  const mode = body.mode === "deep" ? "deep" : "lite";
+  const parsed = tasksEnqueueInputSchema.safeParse(await req.json().catch(() => ({})));
+  if (!parsed.success) return NextResponse.json({ error: firstValidationMessage(parsed.error) }, { status: 400 });
+  const { noteId, mode } = parsed.data;
   try {
     return await runLearningEnqueue({ user, noteId, mode });
   } catch (e) {

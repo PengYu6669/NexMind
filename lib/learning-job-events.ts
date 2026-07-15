@@ -5,7 +5,6 @@ type LearningJobEvent =
   | { type: "jobs_changed"; userId: string };
 
 declare global {
-  // eslint-disable-next-line no-var
   var __nexmindLearningJobEmitter: EventEmitter | undefined;
 }
 
@@ -31,9 +30,10 @@ export function onLearningJobEvent(
   handler: (event: LearningJobEvent) => void,
 ): () => void {
   const emitter = getEmitter();
-  emitter.on(type, handler as any);
+  const listener = (event: LearningJobEvent) => handler(event);
+  emitter.on(type, listener);
   return () => {
-    emitter.off(type, handler as any);
+    emitter.off(type, listener);
   };
 }
 

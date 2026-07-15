@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getAuthUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { callDashscopeChatCompletion, extractJsonFromText } from "@/lib/doubao";
+import { firstValidationMessage, reviewScoreInputSchema } from "@/lib/api-inputs";
 
 function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
@@ -47,25 +48,11 @@ export async function POST(req: Request) {
   const user = await getAuthUser();
   if (!user) return NextResponse.json({ error: "未登录" }, { status: 401 });
 
-  const body = (await req.json().catch(() => null)) as
-    | { reviewItemId?: unknown; learningCardId?: unknown; score?: unknown; answer?: unknown }
-    | null;
-  const reviewItemId = body?.reviewItemId;
-  const learningCardId = body?.learningCardId;
-  const scoreRaw = body?.score;
-  const answerRaw = body?.answer;
-
-  if (typeof reviewItemId !== "string" || reviewItemId.trim().length === 0) {
-    return NextResponse.json({ error: "reviewItemId 无效" }, { status: 400 });
-  }
-  const hasManualScore = typeof scoreRaw === "number" || typeof scoreRaw === "string";
+  const parsedInput = reviewScoreInputSchema.safeParse(await req.json().catch(() => ({})));
+  if (!parsedInput.success) return NextResponse.json({ error: firstValidationMessage(parsedInput.error) }, { status: 400 });
+  const { reviewItemId, learningCardId, score: scoreRaw, answer = "" } = parsedInput.data;
+  const hasManualScore = scoreRaw !== undefined;
   const manualScore = hasManualScore ? clamp(Math.round(Number(scoreRaw)), 0, 5) : null;
-  const answer =
-    typeof answerRaw === "string" ? answerRaw.trim() : answerRaw != null ? String(answerRaw).trim() : "";
-
-  if (!hasManualScore && !answer) {
-    return NextResponse.json({ error: "缺少评分信息：请提供 score 或 answer" }, { status: 400 });
-  }
 
   const now = new Date();
 
@@ -91,7 +78,7 @@ export async function POST(req: Request) {
   if (manualScore != null) {
     score = manualScore;
   } else {
-    if (typeof learningCardId !== "string" || learningCardId.trim().length === 0) {
+    if (!learningCardId) {
       return NextResponse.json({ error: "learningCardId 无效" }, { status: 400 });
     }
 

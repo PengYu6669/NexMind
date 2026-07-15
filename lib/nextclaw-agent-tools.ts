@@ -10,6 +10,7 @@ import {
 import { callNextClawKnowledgeTool, nextClawMcpKnowledgeEnabled } from "@/lib/nextclaw-mcp-client";
 import { SEARCH_CN_ONLY, SEARCH_PREFER_CN } from "@/lib/nextclaw-agent-config";
 import { stripHtmlToText } from "@/lib/rag";
+import { runNextClawSkill } from "@/lib/nextclaw-skills";
 
 export type ExecuteToolContext = {
   userId: string;
@@ -17,6 +18,10 @@ export type ExecuteToolContext = {
   relatedNotes: { noteId: string; title: string; snippet: string; distance?: number }[];
   /** 来自 Plan 的可选参数，例如指定 read_note 的目标 noteId（后续接 MCP 时扩展） */
   toolInput?: Record<string, unknown>;
+  /** 运行时路由：用于工具分域与并行抓取时的独立通道 */
+  runtime?: {
+    channelKey?: string;
+  };
 };
 
 export type ExecuteToolResult = {
@@ -25,7 +30,24 @@ export type ExecuteToolResult = {
   summary: string;
   /** 可选：供 Runner 串联下一步的结构化输出 */
   data?: unknown;
+  provider?: "mcp" | "local";
+  degraded?: boolean;
+  reasonCode?:
+    | "mcp_disabled"
+    | "mcp_failed"
+    | "missing_input"
+    | "not_found"
+    | "local_fallback"
+    | "unsupported";
 };
+
+function okResult(params: Omit<ExecuteToolResult, "ok">): ExecuteToolResult {
+  return { ok: true, ...params };
+}
+
+function failResult(params: Omit<ExecuteToolResult, "ok">): ExecuteToolResult {
+  return { ok: false, ...params };
+}
 
 async function mcpSemanticSearch(ctx: ExecuteToolContext): Promise<ExecuteToolResult | null> {
   if (!nextClawMcpKnowledgeEnabled()) return null;
@@ -43,7 +65,7 @@ async function mcpSemanticSearch(ctx: ExecuteToolContext): Promise<ExecuteToolRe
       userId: ctx.userId,
       query: q,
       topK,
-    });
+    }, ctx.runtime?.channelKey ? { channelKey: ctx.runtime.channelKey } : undefined);
     if (r.isError || !r.ok) {
       return {
         ok: false,
@@ -69,6 +91,7 @@ async function mcpSemanticSearch(ctx: ExecuteToolContext): Promise<ExecuteToolRe
       summary: `semantic_search（MCP）：命中 ${hits.length} 段${titles.length ? `（${titles.join("；")}）` : ""}${
         dupRatio >= 0.45 ? "；结果相似度偏高，建议扩大范围或换关键词" : ""
       }`,
+      provider: "mcp",
       data: dupRatio >= 0.45 ? { duplicateRatio: dupRatio } : undefined,
     };
   } catch (e) {
@@ -84,7 +107,7 @@ async function mcpReadNote(ctx: ExecuteToolContext, targetId: string): Promise<E
       userId: ctx.userId,
       noteId: targetId,
       maxChars: 8000,
-    });
+    }, ctx.runtime?.channelKey ? { channelKey: ctx.runtime.channelKey } : undefined);
     if (r.isError || !r.ok) {
       return {
         ok: false,
@@ -103,6 +126,7 @@ async function mcpReadNote(ctx: ExecuteToolContext, targetId: string): Promise<E
     return {
       ok: true,
       summary: `read_note（MCP）：《${title}》正文约 ${len} 字${trunc}`,
+      provider: "mcp",
     };
   } catch (e) {
     console.warn("[executeTool] MCP read_note failed, using inline path:", e);
@@ -122,7 +146,7 @@ async function mcpFetchUrl(ctx: ExecuteToolContext): Promise<ExecuteToolResult |
       url,
       timeoutMs: 20000,
       maxChars: 25000,
-    });
+    }, ctx.runtime?.channelKey ? { channelKey: ctx.runtime.channelKey } : undefined);
     if (r.isError || !r.ok) {
       return { ok: false, summary: `fetch_url（MCP）：${r.text.slice(0, 240)}${r.text.length > 240 ? "…" : ""}` };
     }
@@ -132,6 +156,7 @@ async function mcpFetchUrl(ctx: ExecuteToolContext): Promise<ExecuteToolResult |
     return {
       ok: true,
       summary: `fetch_url（MCP）：已抓取 ${data?.url ?? url}（约 ${len} 字${data?.truncated ? "，已截断" : ""}）`,
+      provider: "mcp",
       data: { markdown: md, url: data?.url ?? url },
     };
   } catch (e) {
@@ -156,7 +181,7 @@ async function mcpAuditContent(ctx: ExecuteToolContext): Promise<ExecuteToolResu
         content: n.snippet,
       })),
       maxItems: 6,
-    });
+    }, ctx.runtime?.channelKey ? { channelKey: ctx.runtime.channelKey } : undefined);
     if (r.isError || !r.ok) {
       return { ok: false, summary: `audit_content（MCP）：${r.text.slice(0, 240)}${r.text.length > 240 ? "…" : ""}` };
     }
@@ -171,6 +196,7 @@ async function mcpAuditContent(ctx: ExecuteToolContext): Promise<ExecuteToolResu
     return {
       ok: true,
       summary: `audit_content（MCP）：冲突 ${c} · 补位 ${g} · 关联建议 ${s}`,
+      provider: "mcp",
       data,
     };
   } catch (e) {
@@ -200,7 +226,7 @@ async function mcpWebSearch(ctx: ExecuteToolContext): Promise<ExecuteToolResult 
       freshness: "month",
       engine: "baidu",
       ...(SEARCH_PREFER_CN ? { gl: "cn", hl: "zh-CN" } : {}),
-    });
+    }, ctx.runtime?.channelKey ? { channelKey: ctx.runtime.channelKey } : undefined);
     if (r.isError || !r.ok) {
       return { ok: false, summary: `web_search（MCP）：${r.text.slice(0, 240)}${r.text.length > 240 ? "…" : ""}` };
     }
@@ -213,6 +239,7 @@ async function mcpWebSearch(ctx: ExecuteToolContext): Promise<ExecuteToolResult 
     return {
       ok: true,
       summary: `web_search（MCP-${data?.engine ?? "unknown"}）：关键词「${q}」命中 ${results.length} 条${titles.length ? `（${titles.join("；")}）` : ""}`,
+      provider: "mcp",
       data: { query: q, results },
     };
   } catch (e) {
@@ -234,10 +261,11 @@ export async function executeTool(
       const mcp = await mcpSemanticSearch(ctx);
       if (mcp) return mcp;
       const titles = ctx.relatedNotes.slice(0, 5).map((n) => n.title);
-      return {
-        ok: true,
+      return okResult({
         summary: `search_notes：命中 ${ctx.relatedNotes.length} 条相关笔记${titles.length ? `（${titles.join("；")}）` : ""}`,
-      };
+        provider: "local",
+        ...(nextClawMcpKnowledgeEnabled() ? { degraded: true, reasonCode: "mcp_failed" } : { reasonCode: "mcp_disabled" }),
+      });
     }
     case "read_note": {
       const raw = ctx.toolInput?.noteId;
@@ -247,43 +275,82 @@ export async function executeTool(
 
       if (targetId === ctx.note.id) {
         const plain = stripHtmlToText(ctx.note.content);
-        return {
-          ok: true,
+        return okResult({
           summary: `read_note：已读取当前笔记正文（${Math.min(plain.length, 8000)} 字内片段用于对齐）`,
-        };
+          provider: "local",
+          ...(nextClawMcpKnowledgeEnabled() ? { degraded: true, reasonCode: "mcp_failed" } : { reasonCode: "mcp_disabled" }),
+        });
       }
       const other = await prisma.note.findFirst({
         where: { id: targetId, userId: ctx.userId },
         select: { title: true, content: true },
       });
       if (!other) {
-        return { ok: false, summary: `read_note：未找到笔记 ${targetId}` };
+        return failResult({ summary: `read_note：未找到笔记 ${targetId}`, provider: "local", reasonCode: "not_found" });
       }
       const plain = stripHtmlToText(other.content).slice(0, 2000);
-      return {
-        ok: true,
+      return okResult({
         summary: `read_note：《${other.title}》摘录 ${plain.slice(0, 240)}${plain.length > 240 ? "…" : ""}`,
-      };
+        provider: "local",
+        ...(nextClawMcpKnowledgeEnabled() ? { degraded: true, reasonCode: "mcp_failed" } : { reasonCode: "mcp_disabled" }),
+      });
     }
     case "web_search": {
       const mcp = await mcpWebSearch(ctx);
       if (mcp) return mcp;
-      return { ok: false, summary: "web_search：MCP 未启用或调用失败（暂无本地实现）" };
+      return failResult({
+        summary: "web_search：MCP 未启用或调用失败（暂无本地实现）",
+        provider: "local",
+        reasonCode: nextClawMcpKnowledgeEnabled() ? "mcp_failed" : "mcp_disabled",
+      });
     }
     case "fetch_url": {
       const mcp = await mcpFetchUrl(ctx);
       if (mcp) return mcp;
-      return { ok: false, summary: "fetch_url：MCP 未启用或调用失败（暂无本地实现）" };
+      return failResult({
+        summary: "fetch_url：MCP 未启用或调用失败（暂无本地实现）",
+        provider: "local",
+        reasonCode: nextClawMcpKnowledgeEnabled() ? "mcp_failed" : "mcp_disabled",
+      });
     }
     case "audit_content": {
       const mcp = await mcpAuditContent(ctx);
       if (mcp) return mcp;
-      return { ok: false, summary: "audit_content：MCP 未启用或调用失败（暂无本地实现）" };
+      const raw = ctx.toolInput?.newContent;
+      const newContent = typeof raw === "string" ? raw : "";
+      if (!newContent.trim()) {
+        return okResult({
+          summary: "audit_content：跳过（未抓取到正文内容）",
+          provider: "local",
+          reasonCode: "missing_input",
+        });
+      }
+      const localAudit = runNextClawSkill("conflict_audit", {
+        noteText: stripHtmlToText(ctx.note.content),
+        fetchedMarkdown: newContent,
+        relatedNotes: ctx.relatedNotes.slice(0, 8).map((n) => ({
+          noteId: n.noteId,
+          title: n.title,
+          snippet: n.snippet,
+        })),
+      });
+      const suggestedNoteIds = ctx.relatedNotes.slice(0, 3).map((n) => n.noteId);
+      return okResult({
+        summary: `audit_content（local）：冲突 ${localAudit.conflicts.length} · 补位 ${localAudit.fillGaps.length} · 关联建议 ${suggestedNoteIds.length}`,
+        provider: "local",
+        degraded: true,
+        reasonCode: nextClawMcpKnowledgeEnabled() ? "local_fallback" : "mcp_disabled",
+        data: {
+          conflicts: localAudit.conflicts,
+          fillGaps: localAudit.fillGaps,
+          suggestedNoteIds,
+        },
+      });
     }
     case "synthesize":
-      return { ok: true, summary: "synthesize：进入结构化生成（学习卡片）阶段" };
+      return okResult({ summary: "synthesize：进入结构化生成（学习卡片）阶段", provider: "local" });
     case "noop":
     default:
-      return { ok: true, summary: "noop：无工具调用" };
+      return okResult({ summary: "noop：无工具调用", provider: "local" });
   }
 }

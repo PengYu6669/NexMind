@@ -2,18 +2,15 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAuthUser } from "@/lib/auth";
 import { generateChatToNoteResult } from "@/lib/doubao";
+import { firstValidationMessage, saveNoteInputSchema } from "@/lib/api-inputs";
 
 export async function POST(req: Request) {
   const user = await getAuthUser();
   if (!user) return NextResponse.json({ error: "未登录" }, { status: 401 });
 
-  const body = (await req.json()) as {
-    conversationId?: string;
-    /** 若传入且非空：只整理这些消息（须属于该会话） */
-    messageIds?: string[];
-    /** true = 不走 AI，直接保存原文对话 */
-    raw?: boolean;
-  };
+  const parsed = saveNoteInputSchema.safeParse(await req.json().catch(() => ({})));
+  if (!parsed.success) return NextResponse.json({ error: firstValidationMessage(parsed.error) }, { status: 400 });
+  const body = parsed.data;
 
   let conversationId = body.conversationId;
   if (!conversationId) {
@@ -45,20 +42,20 @@ export async function POST(req: Request) {
 
   if (idSet.size > 0) {
     partialSelection = true;
-    const allowed = new Set(conversation.messages.map((m: any) => m.id));
+    const allowed = new Set(conversation.messages.map((m) => m.id));
     for (const id of idSet) {
       if (!allowed.has(id)) {
         return NextResponse.json({ error: "存在不属于当前会话的消息" }, { status: 400 });
       }
     }
-    picked = conversation.messages.filter((m: any) => idSet.has(m.id));
+    picked = conversation.messages.filter((m) => idSet.has(m.id));
     if (picked.length === 0) {
       return NextResponse.json({ error: "所选消息无效" }, { status: 400 });
     }
   }
 
   const conversationText = picked
-    .map((m: any) => `${m.role === "USER" ? "用户" : m.role === "ASSISTANT" ? "助手" : "系统"}：${m.content}`)
+    .map((m) => `${m.role === "USER" ? "用户" : m.role === "ASSISTANT" ? "助手" : "系统"}：${m.content}`)
     .join("\n");
 
   const rawMode = Boolean(body.raw);

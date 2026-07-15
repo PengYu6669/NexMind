@@ -443,7 +443,7 @@ export function AiChatPanel({
     streamAbortRef.current?.abort();
     const controller = new AbortController();
     streamAbortRef.current = controller;
-    let content = (forcedContent ?? input).trim();
+    const content = (forcedContent ?? input).trim();
     if (!content) return;
 
     setSendLoading(true);

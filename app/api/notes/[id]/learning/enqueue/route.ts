@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getAuthUser } from "@/lib/auth";
 import { enqueueErrorResponse, runLearningEnqueue } from "@/lib/note-learning-enqueue";
+import { firstValidationMessage, learningEnqueueInputSchema } from "@/lib/api-inputs";
 
 export async function POST(req: Request, context: { params: Promise<{ id: string }> }) {
   const user = await getAuthUser();
@@ -17,8 +18,9 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
     return NextResponse.json({ error: "缺少笔记 id", code: "MISSING_NOTE_ID" }, { status: 400 });
   }
 
-  const body = (await req.json().catch(() => ({}))) as { mode?: "lite" | "deep" };
-  const mode = body.mode === "deep" ? "deep" : "lite";
+  const parsed = learningEnqueueInputSchema.safeParse(await req.json().catch(() => ({})));
+  if (!parsed.success) return NextResponse.json({ error: firstValidationMessage(parsed.error), code: "BAD_REQUEST" }, { status: 400 });
+  const { mode } = parsed.data;
 
   try {
     return await runLearningEnqueue({ user, noteId: noteId.trim(), mode });

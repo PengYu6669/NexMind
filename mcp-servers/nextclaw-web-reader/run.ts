@@ -10,6 +10,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { assertSafePublicHttpUrl } from "../../lib/safe-public-url";
 
 const server = new McpServer({ name: "nextclaw-web-reader", version: "0.1.0" });
 
@@ -60,7 +61,7 @@ server.registerTool(
     },
   },
   async ({ url, timeoutMs, maxChars }) => {
-    const target = normalizeUrl(url);
+    const target = (await assertSafePublicHttpUrl(normalizeUrl(url))).toString();
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs ?? 20000);
     try {

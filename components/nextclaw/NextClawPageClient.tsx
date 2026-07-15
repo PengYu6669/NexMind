@@ -73,7 +73,23 @@ export function NextClawPageClient() {
         headline: string;
         progress: number;
         currentStepLabel: string | null;
-        steps: { id: string; label: string; status: string; toolSummary?: string }[];
+        steps: {
+          id: string;
+          label: string;
+          status: string;
+          toolSummary?: string;
+          meta?: {
+            agentRole?: string;
+            inputSummary?: string;
+            outputSummary?: string;
+            handoffTo?: string;
+            durationMs?: number;
+            candidateCount?: number;
+            parallelTasks?: number;
+            toolDomain?: string;
+            communication?: string[];
+          };
+        }[];
         generatedNotes?: { id: string; title: string }[];
       };
     }[]
@@ -103,7 +119,23 @@ export function NextClawPageClient() {
           headline: string;
           progress: number;
           currentStepLabel: string | null;
-          steps: { id: string; label: string; status: string; toolSummary?: string }[];
+          steps: {
+            id: string;
+            label: string;
+            status: string;
+            toolSummary?: string;
+            meta?: {
+              agentRole?: string;
+              inputSummary?: string;
+              outputSummary?: string;
+              handoffTo?: string;
+              durationMs?: number;
+              candidateCount?: number;
+              parallelTasks?: number;
+              toolDomain?: string;
+              communication?: string[];
+            };
+          }[];
           generatedNotes?: { id: string; title: string }[];
         };
       }[];
@@ -288,9 +320,9 @@ export function NextClawPageClient() {
   );
 
   return (
-    <div className="h-[100dvh] min-h-0 overflow-hidden bg-[#fbfbfa] font-body text-black">
+    <div className="h-[100dvh] min-h-0 overflow-hidden bg-[#fbfbfa] pb-16 font-body text-black md:pb-0">
       <AppSidebar />
-      <div className="flex h-full min-h-0 flex-col pl-64">
+      <div className="flex h-full min-h-0 flex-col md:pl-64">
         <AppTopBar
           center={
             <NextClawCommandBar
@@ -302,7 +334,7 @@ export function NextClawPageClient() {
           }
         />
 
-        <div className="flex min-h-0 flex-1 overflow-hidden pb-6 pt-16">
+        <div className="flex min-h-0 flex-1 overflow-hidden pb-2 pt-16 md:pb-6">
           <aside className="hidden min-h-0 w-[20%] min-w-[260px] max-w-[420px] flex-col overflow-hidden border-r border-black/10 bg-white lg:flex">
             {/* 控制台：占满左侧栏剩余空间 */}
             <div className="min-h-0 flex-1 overflow-hidden p-3">

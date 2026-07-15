@@ -13,6 +13,8 @@ import {
 } from "@/lib/nextclaw-memory";
 import { nextClawAntiFillInBlankExtraPrompt } from "@/lib/nextclaw-intent";
 import { ensureKnowledgeSourceIndexed } from "@/lib/knowledge-source-process";
+import { buildConversationWindow } from "@/lib/nextclaw-conversation-window";
+import { chatMessageInputSchema, firstValidationMessage } from "@/lib/api-inputs";
 
 function mapToAiRole(role: "USER" | "ASSISTANT" | "SYSTEM"): "user" | "assistant" | "system" {
   if (role === "USER") return "user";
@@ -26,22 +28,10 @@ export async function POST(req: Request) {
   const user = await getAuthUser();
   if (!user) return NextResponse.json({ error: "未登录" }, { status: 401 });
 
-  const body = (await req.json()) as {
-    content?: string;
-    conversationId?: string;
-    noteId?: string;
-    /** 智能流卡片追问：注入卡片上下文并默认聚焦其所属笔记 */
-    learningCardId?: string;
-    /** @deprecated 使用 nextclaw */
-    companion?: boolean;
-    nextclaw?: boolean;
-    /** NextClaw 预设自动执行：由后端在回答结束后自动生成“学习笔记版”并落库 */
-    autonomousStudy?: boolean;
-    /** 本会话已上传并入库的聊天附件（KnowledgeSource.id） */
-    attachmentSourceIds?: string[];
-  };
-  const content = body.content?.trim();
-  if (!content) return NextResponse.json({ error: "缺少 content" }, { status: 400 });
+  const parsed = chatMessageInputSchema.safeParse(await req.json().catch(() => ({})));
+  if (!parsed.success) return NextResponse.json({ error: firstValidationMessage(parsed.error) }, { status: 400 });
+  const body = parsed.data;
+  const { content } = body;
   const nextClawMode = Boolean(body.nextclaw ?? body.companion);
   const autonomousStudy = Boolean(body.autonomousStudy);
 
@@ -206,13 +196,19 @@ export async function POST(req: Request) {
     },
   });
 
-  // 2) 读取上下文（截断最近 N 条）
-  const messages = await prisma.message.findMany({
+  // 2) 读取上下文（token 预算感知窗口 + 早期消息滚动摘要）
+  const rawMessages = await prisma.message.findMany({
     where: { conversationId },
     orderBy: { createdAt: "asc" },
-    take: 30,
+    take: 60, // 多取一些供摘要使用
     select: { role: true, content: true },
   });
+  const convWindow = buildConversationWindow(
+    rawMessages.map((m) => ({
+      role: mapToAiRole(m.role as "USER" | "ASSISTANT" | "SYSTEM"),
+      content: m.content,
+    })),
+  );
 
   // 2.1) RAG：全库或「仅选中笔记」内检索；无向量时退回正文摘录
   // 选中单篇笔记时：必须始终注入正文摘录，不能只依赖向量片段（否则模型往往只看到标题或与问题弱相关的 chunk）
@@ -329,7 +325,12 @@ export async function POST(req: Request) {
     ? `【用户长期上下文（来自历史记忆与学习快照，请酌情使用，勿编造）】\n${memoryBlock}`
     : "";
 
-  const systemContent = [systemPrompt, nextClawNoteExtra, memorySection, learningCardBlock, attachmentTextBlock, ragBlock]
+  // 早期对话摘要（token 预算超限时生成）
+  const summaryBlock = convWindow.summary
+    ? `【早期对话摘要（以下为更早消息的自动摘要，仅供参考）】\n${convWindow.summary}`
+    : "";
+
+  const systemContent = [systemPrompt, nextClawNoteExtra, memorySection, summaryBlock, learningCardBlock, attachmentTextBlock, ragBlock]
     .filter(Boolean)
     .join("\n\n");
 
@@ -338,10 +339,7 @@ export async function POST(req: Request) {
       role: "system" as const,
       content: systemContent,
     },
-    ...messages.map((m) => ({
-      role: mapToAiRole(m.role as "USER" | "ASSISTANT" | "SYSTEM"),
-      content: m.content,
-    })),
+    ...convWindow.windowMessages,
   ];
 
   // 3) 调用 AI：透传 OpenAI 兼容 SSE，结束后写入助手消息并下发 nexmind_done
@@ -388,7 +386,9 @@ export async function POST(req: Request) {
     });
 
     if (nextClawMemoryOn) {
-      void extractNextClawMemoriesFromTurn(user.id, content, assistantText).catch(() => {});
+      void extractNextClawMemoriesFromTurn(user.id, content, assistantText, {
+        conversationId: conversationId || undefined,
+      }).catch(() => {});
     }
 
     // NextClaw 自主学习：自动生成学习笔记版并落库
