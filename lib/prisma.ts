@@ -10,7 +10,12 @@ function createPrismaClient(): PrismaClient {
       "缺少环境变量 DATABASE_URL。请将 .env.example 复制为 .env 并填写 PostgreSQL 连接串。"
     );
   }
-  const adapter = new PrismaPg({ connectionString });
+  // 连接池上限可配（默认沿用 pg 的 10），避免多实例/任务高峰时打满数据库连接
+  const poolMax = Number(process.env.DATABASE_POOL_MAX);
+  const adapter = new PrismaPg({
+    connectionString,
+    ...(Number.isInteger(poolMax) && poolMax > 0 ? { max: poolMax } : {}),
+  });
   return new PrismaClient({
     adapter,
     log: process.env.NODE_ENV === "development" ? ["error", "warn"] : ["error"],

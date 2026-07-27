@@ -67,6 +67,7 @@
     "react-dom": "19.2.4",
     "react-force-graph-2d": "^1.29.1",
     "reactflow": "^11.11.4",
+    "tsx": "^4.21.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
@@ -79,7 +80,6 @@
     "eslint": "^9",
     "eslint-config-next": "16.2.1",
     "tailwindcss": "^4",
-    "tsx": "^4.21.0",
     "typescript": "^5",
     "vitest": "^4.1.10"
   }
