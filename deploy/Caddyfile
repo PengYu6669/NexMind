@@ -1,0 +1,9 @@
+# APP_DOMAIN 由 compose 环境变量注入，Caddy 自动签发 HTTPS 证书
+{$APP_DOMAIN} {
+	encode gzip
+
+	reverse_proxy app:3000 {
+		# SSE（/api/nextclaw/feed/stream、chat 流式输出）不做缓冲
+		flush_interval -1
+	}
+}

@@ -1,0 +1,70 @@
+# 生产部署：docker compose -f docker-compose.prod.yml up -d --build
+# 服务器上准备好 .env（参考 .env.example 的生产段说明）即可。
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in .env}
+    # 不向公网暴露端口；仅供 compose 内部网络访问。
+    # 需要本机调试时可临时改为 "127.0.0.1:55432:5432"
+    volumes:
+      - nexmind_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # 覆盖 .env 中的连接串，固定指向 compose 内的 postgres
+      DATABASE_URL: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?schema=public"
+      NODE_ENV: production
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/api/health/ready || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:?set APP_DOMAIN in .env}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - nexmind_caddy_data:/data
+      - nexmind_caddy_config:/config
+    depends_on:
+      - app
+
+  # 定时驱动学习任务队列，补充 after() 兜底（AGENTS.md 学习任务契约）
+  cron:
+    image: alpine:3.22
+    restart: unless-stopped
+    environment:
+      INTERNAL_CRON_TOKEN: ${INTERNAL_CRON_TOKEN:?set INTERNAL_CRON_TOKEN in .env}
+    volumes:
+      - ./deploy/cron-entrypoint.sh:/usr/local/bin/cron-entrypoint.sh:ro
+      - ./deploy/cron-call.sh:/usr/local/bin/cron-call.sh:ro
+    entrypoint: ["/bin/sh", "/usr/local/bin/cron-entrypoint.sh"]
+    depends_on:
+      - app
+
+volumes:
+  nexmind_postgres_data:
+  nexmind_caddy_data:
+  nexmind_caddy_config:

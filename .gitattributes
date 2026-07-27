@@ -1,0 +1,4 @@
+# shell 脚本在 Linux 容器内执行，强制 LF，避免 Windows 检出 CRLF 导致 /bin/sh 报错
+*.sh text eol=lf
+deploy/Caddyfile text eol=lf
+Dockerfile text eol=lf

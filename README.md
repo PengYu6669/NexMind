@@ -115,6 +115,7 @@ Health endpoints:
 
 ## Project Map
 
+- `docs/项目地图.md`: ownership checklist, code-reading routes, and interview Q&A
 - `app/`: routes and API boundaries
 - `components/`: user-facing UI
 - `lib/nextclaw-langgraph.ts`: workflow graph and node execution

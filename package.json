@@ -18,11 +18,7 @@
     "test:core": "tsx scripts/test-core-chain.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "mcp:nextclaw-knowledge": "tsx mcp-servers/nextclaw-knowledge/run.ts",
-    "mcp:nextclaw-web-reader": "tsx mcp-servers/nextclaw-web-reader/run.ts",
-    "mcp:nextclaw-knowledge-auditor": "tsx mcp-servers/nextclaw-knowledge-auditor/run.ts",
-    "mcp:nextclaw-bridge": "tsx mcp-servers/nextclaw-bridge/run.ts",
-    "mcp:nextclaw-search": "tsx mcp-servers/nextclaw-search/run.ts"
+    "mcp:nextclaw-bridge": "tsx mcp-servers/nextclaw-bridge/run.ts"
   },
   "dependencies": {
     "@langchain/core": "^1.1.36",
@@ -67,6 +63,7 @@
     "react-dom": "19.2.4",
     "react-force-graph-2d": "^1.29.1",
     "reactflow": "^11.11.4",
+    "tsx": "^4.21.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
@@ -79,7 +76,6 @@
     "eslint": "^9",
     "eslint-config-next": "16.2.1",
     "tailwindcss": "^4",
-    "tsx": "^4.21.0",
     "typescript": "^5",
     "vitest": "^4.1.10"
   }
