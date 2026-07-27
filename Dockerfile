@@ -6,12 +6,18 @@
 
 FROM node:22-alpine AS deps
 WORKDIR /app
+# 国内服务器构建加速（可选）：默认官方源；.env 设
+#   NPM_REGISTRY=https://registry.npmmirror.com
+#   PRISMA_ENGINES_MIRROR=https://registry.npmmirror.com/-/binary/prisma
+ARG NPM_REGISTRY=https://registry.npmjs.org/
+ARG PRISMA_ENGINES_MIRROR=https://binaries.prisma.sh
+ENV PRISMA_ENGINES_MIRROR=${PRISMA_ENGINES_MIRROR}
 # postinstall 会执行 prisma generate，需要 schema 与 prisma.config.ts
 COPY package.json package-lock.json prisma.config.ts ./
 COPY prisma ./prisma
 # prisma.config.ts 在 generate 时要求 DATABASE_URL 存在，构建期给占位值即可
 ENV DATABASE_URL="postgresql://build:build@127.0.0.1:5432/build?schema=public"
-RUN npm ci
+RUN npm config set registry "${NPM_REGISTRY}" && npm ci
 
 FROM node:22-alpine AS builder
 WORKDIR /app

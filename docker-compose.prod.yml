@@ -19,7 +19,12 @@ services:
       retries: 12
 
   app:
-    build: .
+    build:
+      context: .
+      args:
+        # 国内服务器可在 .env 设置 npmmirror 加速，默认官方源
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org/}
+        PRISMA_ENGINES_MIRROR: ${PRISMA_ENGINES_MIRROR:-https://binaries.prisma.sh}
     restart: unless-stopped
     env_file: .env
     environment:
