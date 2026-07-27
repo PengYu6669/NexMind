@@ -27,6 +27,9 @@ services:
         PRISMA_ENGINES_MIRROR: ${PRISMA_ENGINES_MIRROR:-https://binaries.prisma.sh}
     restart: unless-stopped
     env_file: .env
+    # 宿主机已有 nginx 时：只绑本机回环，由 nginx 反代（见 deploy/nginx-nexmind.conf）
+    ports:
+      - "127.0.0.1:3001:3000"
     environment:
       # 覆盖 .env 中的连接串，固定指向 compose 内的 postgres
       DATABASE_URL: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?schema=public"
@@ -43,6 +46,9 @@ services:
 
   caddy:
     image: caddy:2-alpine
+    # 可选：仅在服务器没有自己的 nginx/反代时启用：
+    #   docker compose -f docker-compose.prod.yml --profile caddy up -d
+    profiles: ["caddy"]
     restart: unless-stopped
     ports:
       - "80:80"
