@@ -18,11 +18,7 @@
     "test:core": "tsx scripts/test-core-chain.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "mcp:nextclaw-knowledge": "tsx mcp-servers/nextclaw-knowledge/run.ts",
-    "mcp:nextclaw-web-reader": "tsx mcp-servers/nextclaw-web-reader/run.ts",
-    "mcp:nextclaw-knowledge-auditor": "tsx mcp-servers/nextclaw-knowledge-auditor/run.ts",
-    "mcp:nextclaw-bridge": "tsx mcp-servers/nextclaw-bridge/run.ts",
-    "mcp:nextclaw-search": "tsx mcp-servers/nextclaw-search/run.ts"
+    "mcp:nextclaw-bridge": "tsx mcp-servers/nextclaw-bridge/run.ts"
   },
   "dependencies": {
     "@langchain/core": "^1.1.36",

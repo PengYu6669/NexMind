@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main, codex-github]
+  pull_request:
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: nexmind_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ci -d nexmind_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      DATABASE_URL: postgresql://ci:ci@localhost:5432/nexmind_ci?schema=public
+      AUTH_JWT_SECRET: ci-only-secret
+      AI_API_KEY: ci-dummy
+      AI_API_BASE_URL: https://example.invalid/api/v3
+      AI_MODEL_CHAT: ci-dummy
+      AI_MODEL_EMBEDDING: ci-dummy
+      AI_EMBEDDING_DIMENSION: "1024"
+      RAG_SCHEMA_AUTO_MIGRATE: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run db:deploy
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run test
+      - run: npm run test:core
+      - run: npm run build
